@@ -12,6 +12,70 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+pub enum CryptoSuite {
+    #[serde(alias = "Ed25519Sha256Legacy")]
+    Ed25519Sha256Legacy,
+    #[serde(alias = "Ed25519Sha256")]
+    Ed25519Sha256,
+    #[serde(alias = "Sm2Sm3")]
+    Sm2Sm3,
+}
+
+impl CryptoSuite {
+    pub fn signing_algorithm(&self) -> &'static str {
+        match self {
+            Self::Ed25519Sha256Legacy | Self::Ed25519Sha256 => "Ed25519",
+            Self::Sm2Sm3 => "SM2",
+        }
+    }
+
+    pub fn hash_algorithm(&self) -> &'static str {
+        match self {
+            Self::Ed25519Sha256Legacy | Self::Ed25519Sha256 => "SHA-256",
+            Self::Sm2Sm3 => "SM3",
+        }
+    }
+
+    pub fn verification_method_type(&self) -> &'static str {
+        match self {
+            Self::Ed25519Sha256Legacy | Self::Ed25519Sha256 => "Ed25519VerificationKey2020",
+            Self::Sm2Sm3 => "SM2VerificationKey2020",
+        }
+    }
+
+    pub fn proof_type(&self) -> &'static str {
+        match self {
+            Self::Ed25519Sha256Legacy | Self::Ed25519Sha256 => "Ed25519Signature2020",
+            Self::Sm2Sm3 => "SM2Signature2020",
+        }
+    }
+
+    pub fn did_prefix(&self) -> &'static str {
+        match self {
+            Self::Ed25519Sha256Legacy | Self::Ed25519Sha256 => "e",
+            Self::Sm2Sm3 => "z",
+        }
+    }
+
+    pub fn from_verification_method_type(value: &str) -> Option<Self> {
+        match value {
+            "Ed25519VerificationKey2020" => Some(Self::Ed25519Sha256Legacy),
+            "SM2VerificationKey2020" => Some(Self::Sm2Sm3),
+            _ => None,
+        }
+    }
+
+    pub fn from_proof_type(value: &str) -> Option<Self> {
+        match value {
+            "Ed25519Signature2020" => Some(Self::Ed25519Sha256Legacy),
+            "SM2Signature2020" => Some(Self::Sm2Sm3),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum SubjectType {
     Agent,
     InfrastructureNode,
@@ -54,10 +118,48 @@ pub struct VerificationMethod {
     #[serde(rename = "type")]
     pub method_type: String,
     pub controller: String,
+    #[serde(rename = "cryptoSuite", skip_serializing_if = "Option::is_none")]
+    pub crypto_suite: Option<CryptoSuite>,
+    #[serde(rename = "publicKeyFormat", skip_serializing_if = "Option::is_none")]
+    pub public_key_format: Option<String>,
     #[serde(rename = "publicKeyMultibase", skip_serializing_if = "Option::is_none")]
     pub public_key_multibase: Option<String>,
     #[serde(rename = "publicKeyJwk", skip_serializing_if = "Option::is_none")]
     pub public_key_jwk: Option<serde_json::Value>,
+}
+
+impl VerificationMethod {
+    pub fn crypto_suite(&self) -> Option<CryptoSuite> {
+        self.crypto_suite
+            .clone()
+            .or_else(|| CryptoSuite::from_verification_method_type(&self.method_type))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DataIntegrityProof {
+    #[serde(rename = "type")]
+    pub proof_type: String,
+    pub creator: String,
+    pub created: chrono::DateTime<chrono::Utc>,
+    #[serde(rename = "proofPurpose")]
+    pub proof_purpose: String,
+    #[serde(rename = "proofValue")]
+    pub proof_value: String,
+    #[serde(rename = "cryptoSuite", skip_serializing_if = "Option::is_none")]
+    pub crypto_suite: Option<CryptoSuite>,
+    #[serde(rename = "hashAlgorithm", skip_serializing_if = "Option::is_none")]
+    pub hash_algorithm: Option<String>,
+    #[serde(rename = "verificationMethod", skip_serializing_if = "Option::is_none")]
+    pub verification_method: Option<String>,
+}
+
+impl DataIntegrityProof {
+    pub fn crypto_suite(&self) -> Option<CryptoSuite> {
+        self.crypto_suite
+            .clone()
+            .or_else(|| CryptoSuite::from_proof_type(&self.proof_type))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

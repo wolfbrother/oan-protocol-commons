@@ -6,8 +6,8 @@
 //! Verified package, manifest, and metadata models.
 
 use chrono::{DateTime, Utc};
-use oan_core::DidDocument;
-use oan_crypto::{hash_json, CryptoError};
+use oan_core::{CryptoSuite, DataIntegrityProof, DidDocument};
+use oan_crypto::{hash_json_with_suite, CryptoError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -45,6 +45,12 @@ pub struct RootProof {
     #[serde(rename = "bulletinEventHash")]
     pub bulletin_event_hash: Option<String>,
     pub signature: Option<String>,
+    #[serde(rename = "proof", skip_serializing_if = "Option::is_none")]
+    pub proof: Option<DataIntegrityProof>,
+    #[serde(rename = "cryptoSuite", skip_serializing_if = "Option::is_none")]
+    pub crypto_suite: Option<CryptoSuite>,
+    #[serde(rename = "hashAlgorithm", skip_serializing_if = "Option::is_none")]
+    pub hash_algorithm: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -96,8 +102,21 @@ pub struct Manifest {
 }
 
 impl VerifiedPackage {
+    fn effective_crypto_suite(&self) -> CryptoSuite {
+        self.root_proof
+            .crypto_suite
+            .clone()
+            .or_else(|| {
+                self.root_proof
+                    .proof
+                    .as_ref()
+                    .and_then(|proof| proof.crypto_suite())
+            })
+            .unwrap_or(CryptoSuite::Ed25519Sha256Legacy)
+    }
+
     pub fn verify_document_hash(&self) -> Result<(), PackageError> {
-        let actual_hash = hash_json(&self.did_document)?;
+        let actual_hash = hash_json_with_suite(self.effective_crypto_suite(), &self.did_document)?;
         if actual_hash == self.did_document_hash {
             Ok(())
         } else {
@@ -109,7 +128,7 @@ impl VerifiedPackage {
         let Some(expected_hash) = self.metadata_hash.as_deref() else {
             return Ok(());
         };
-        let actual_hash = hash_json(&self.metadata)?;
+        let actual_hash = hash_json_with_suite(self.effective_crypto_suite(), &self.metadata)?;
         if actual_hash == expected_hash {
             Ok(())
         } else {
