@@ -7,8 +7,17 @@
 
 use chrono::{DateTime, Utc};
 use oan_core::{DataIntegrityProof, DidDocument};
+use oan_package::VerifiedPackage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+pub const PROTOCOL_VERSION: &str = "ans-2026";
+pub const PURPOSE_AGENT_REGISTRATION: &str = "agent-registration";
+pub const PURPOSE_VERIFY_AND_PUBLISH: &str = "verify-and-publish";
+pub const PURPOSE_CDN_PUBLISH: &str = "cdn-publish";
+pub const PATH_ROOT_VERIFY_AND_PUBLISH: &str = "/root/agents/verify-and-publish";
+pub const PATH_CDN_PACKAGES: &str = "/cdn/packages";
+pub const REGISTRATION_FLOW: &str = "did-control";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HealthResponse {
@@ -60,39 +69,90 @@ pub struct AgentRegisterRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VerifyAndPublishRequest {
+pub struct SignedRequestEnvelope {
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    #[serde(rename = "protocolVersion")]
+    pub protocol_version: String,
+    pub purpose: String,
+    pub method: String,
+    pub path: String,
+    pub aud: String,
+    #[serde(rename = "requestTimestamp")]
+    pub request_timestamp: DateTime<Utc>,
+    #[serde(rename = "requestNonce")]
+    pub request_nonce: String,
+    #[serde(rename = "bodyHash")]
+    pub body_hash: String,
+    pub proof: DataIntegrityProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DidControlChallenge {
+    #[serde(rename = "challengeId")]
+    pub challenge_id: String,
+    #[serde(rename = "draftId")]
+    pub draft_id: String,
+    #[serde(rename = "subjectDid")]
+    pub subject_did: String,
+    #[serde(rename = "didDocumentHash")]
+    pub did_document_hash: String,
     #[serde(rename = "registrarDid")]
     pub registrar_did: String,
-    #[serde(rename = "registrarDidDocument")]
-    pub registrar_did_document: DidDocument,
+    pub purpose: String,
+    #[serde(rename = "verificationMethod")]
+    pub verification_method: String,
+    pub nonce: String,
+    #[serde(rename = "issuedAt")]
+    pub issued_at: DateTime<Utc>,
+    #[serde(rename = "expiresAt")]
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SubjectControlProofBundle {
+    pub challenge: DidControlChallenge,
+    pub proof: DataIntegrityProof,
+    #[serde(rename = "verifiedAt", skip_serializing_if = "Option::is_none")]
+    pub verified_at: Option<DateTime<Utc>>,
+    #[serde(
+        rename = "verifiedVerificationMethod",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub verified_verification_method: Option<String>,
+    #[serde(rename = "proofHash", skip_serializing_if = "Option::is_none")]
+    pub proof_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AgentRegistrationSubmission {
     #[serde(rename = "agentDid")]
     pub agent_did: String,
-    /// Full DID Document for both create and update operations.
-    ///
-    /// Root Node does not accept patch, diff, or partial DID Document updates.
     #[serde(rename = "didDocument")]
     pub did_document: DidDocument,
+    #[serde(rename = "didDocumentHash")]
+    pub did_document_hash: String,
     pub metadata: Value,
     #[serde(rename = "registrationCredential")]
     pub registration_credential: Value,
-    #[serde(
-        rename = "requestTimestamp",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub request_timestamp: Option<DateTime<Utc>>,
-    #[serde(
-        rename = "requestNonce",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub request_nonce: Option<String>,
-    #[serde(
-        rename = "requestSignature",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub request_signature: Option<String>,
+    #[serde(rename = "subjectControlProof")]
+    pub subject_control_proof: SubjectControlProofBundle,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VerifyAndPublishRequest {
+    #[serde(rename = "registrarDid")]
+    pub registrar_did: String,
+    pub submission: AgentRegistrationSubmission,
+    #[serde(rename = "upstreamAuth")]
+    pub upstream_auth: SignedRequestEnvelope,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CdnPublishRequest {
+    pub package: VerifiedPackage,
+    #[serde(rename = "upstreamAuth")]
+    pub upstream_auth: SignedRequestEnvelope,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -200,3 +260,4 @@ pub struct InvocationEnvelope {
     pub created_at: DateTime<Utc>,
     pub signature: String,
 }
+
