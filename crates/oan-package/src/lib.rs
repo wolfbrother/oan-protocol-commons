@@ -45,6 +45,8 @@ pub struct RootProof {
     #[serde(rename = "bulletinEventHash")]
     pub bulletin_event_hash: Option<String>,
     pub signature: Option<String>,
+    #[serde(rename = "packageClaims", skip_serializing_if = "Option::is_none")]
+    pub package_claims: Option<serde_json::Value>,
     #[serde(rename = "proof", skip_serializing_if = "Option::is_none")]
     pub proof: Option<DataIntegrityProof>,
     #[serde(rename = "cryptoSuite", skip_serializing_if = "Option::is_none")]
