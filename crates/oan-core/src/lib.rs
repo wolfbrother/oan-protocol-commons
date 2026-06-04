@@ -50,13 +50,6 @@ impl CryptoSuite {
         }
     }
 
-    pub fn did_prefix(&self) -> &'static str {
-        match self {
-            Self::Ed25519Sha256Legacy | Self::Ed25519Sha256 => "e",
-            Self::Sm2Sm3 => "z",
-        }
-    }
-
     pub fn from_verification_method_type(value: &str) -> Option<Self> {
         match value {
             "Ed25519VerificationKey2020" => Some(Self::Ed25519Sha256Legacy),
@@ -78,7 +71,64 @@ impl CryptoSuite {
 #[serde(rename_all = "kebab-case")]
 pub enum SubjectType {
     Agent,
+    AgentService,
+    Skill,
+    McpServer,
+    ToolApi,
+    Organization,
+    Developer,
     InfrastructureNode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceType {
+    AgentService,
+    Skill,
+    McpServer,
+    ToolApi,
+    InfrastructureNode,
+    Organization,
+    Developer,
+}
+
+impl ResourceType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AgentService => "agent_service",
+            Self::Skill => "skill",
+            Self::McpServer => "mcp_server",
+            Self::ToolApi => "tool_api",
+            Self::InfrastructureNode => "infrastructure_node",
+            Self::Organization => "organization",
+            Self::Developer => "developer",
+        }
+    }
+
+    pub fn expected_subject_code(&self) -> &'static str {
+        match self {
+            Self::AgentService => "AG",
+            Self::Skill => "SK",
+            Self::McpServer => "MC",
+            Self::ToolApi => "TL",
+            Self::InfrastructureNode => "IN",
+            Self::Organization => "OR",
+            Self::Developer => "DV",
+        }
+    }
+
+    pub fn from_subject_code(value: &str) -> Option<Self> {
+        match value {
+            "AG" => Some(Self::AgentService),
+            "SK" => Some(Self::Skill),
+            "MC" => Some(Self::McpServer),
+            "TL" => Some(Self::ToolApi),
+            "IN" => Some(Self::InfrastructureNode),
+            "OR" => Some(Self::Organization),
+            "DV" => Some(Self::Developer),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,9 +145,9 @@ pub enum NodeRole {
 impl NodeRole {
     pub fn semantic_code(&self) -> &'static str {
         match self {
-            Self::Root => "AGRT",
-            Self::Registrar => "AGRG",
-            Self::Discovery => "AGDS",
+            Self::Root => "INRT",
+            Self::Registrar => "INRG",
+            Self::Discovery => "INDS",
             Self::ServiceAgent => "AGDM",
             Self::UserAgent => "AGUS",
             Self::TestAgent => "AGTS",
@@ -200,22 +250,151 @@ pub struct AgentDescription {
     pub use_case_examples: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ResourceDescription {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(
+        rename = "capabilityDescription",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub capability_description: Option<String>,
+    #[serde(rename = "capabilityTags", default)]
+    pub capability_tags: Vec<String>,
+    #[serde(rename = "useCaseExamples", default)]
+    pub use_case_examples: Vec<String>,
+    #[serde(rename = "inputSchema", skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    #[serde(rename = "outputSchema", skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audience: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnsMetadata {
+pub struct ProtocolBinding {
+    pub id: String,
+    pub protocol: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(rename = "serviceRef", skip_serializing_if = "Option::is_none")]
+    pub service_ref: Option<String>,
+    #[serde(rename = "schemaRef", skip_serializing_if = "Option::is_none")]
+    pub schema_ref: Option<String>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImplementationLink {
+    pub relation: String,
+    #[serde(rename = "targetDid")]
+    pub target_did: String,
+    #[serde(rename = "targetType", skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<ResourceType>,
+    #[serde(rename = "targetService", skip_serializing_if = "Option::is_none")]
+    pub target_service: Option<String>,
+    #[serde(rename = "versionConstraint", skip_serializing_if = "Option::is_none")]
+    pub version_constraint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialRequirement {
+    #[serde(rename = "credentialType")]
+    pub credential_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<serde_json::Value>,
+    #[serde(rename = "presentationMode", skip_serializing_if = "Option::is_none")]
+    pub presentation_mode: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageInfo {
+    #[serde(rename = "manifestUrl", skip_serializing_if = "Option::is_none")]
+    pub manifest_url: Option<String>,
+    #[serde(rename = "downloadUrl", skip_serializing_if = "Option::is_none")]
+    pub download_url: Option<String>,
+    #[serde(rename = "packageHash", skip_serializing_if = "Option::is_none")]
+    pub package_hash: Option<String>,
+    #[serde(rename = "metadataHash", skip_serializing_if = "Option::is_none")]
+    pub metadata_hash: Option<String>,
+    #[serde(rename = "rootProofRef", skip_serializing_if = "Option::is_none")]
+    pub root_proof_ref: Option<String>,
+    #[serde(rename = "bulletinRef", skip_serializing_if = "Option::is_none")]
+    pub bulletin_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(rename = "versionScheme", skip_serializing_if = "Option::is_none")]
+    pub version_scheme: Option<String>,
+    #[serde(rename = "previousVersion", skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<String>,
+    #[serde(rename = "releaseNotesUrl", skip_serializing_if = "Option::is_none")]
+    pub release_notes_url: Option<String>,
+    #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "expiresAt", skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OanMetadata {
     #[serde(rename = "subjectType")]
-    pub subject_type: SubjectType,
-    #[serde(rename = "identityType")]
-    pub identity_type: String,
+    pub subject_type: ResourceType,
+    #[serde(rename = "resourceType")]
+    pub resource_type: ResourceType,
+    #[serde(rename = "nodeRole", skip_serializing_if = "Option::is_none")]
+    pub node_role: Option<String>,
+    #[serde(rename = "identityType", skip_serializing_if = "Option::is_none")]
+    pub identity_type: Option<String>,
+    #[serde(rename = "controllerDid", skip_serializing_if = "Option::is_none")]
+    pub controller_did: Option<String>,
+    #[serde(rename = "publisherDid", skip_serializing_if = "Option::is_none")]
+    pub publisher_did: Option<String>,
+    #[serde(rename = "issuerDid", skip_serializing_if = "Option::is_none")]
+    pub issuer_did: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ttl: Option<u64>,
-    #[serde(rename = "addressBindings", default)]
-    pub address_bindings: Vec<AddressBinding>,
+    #[serde(
+        rename = "resourceDescription",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resource_description: Option<ResourceDescription>,
     #[serde(rename = "agentDescription", skip_serializing_if = "Option::is_none")]
     pub agent_description: Option<AgentDescription>,
+    #[serde(rename = "capabilityTags", default)]
+    pub capability_tags: Vec<String>,
+    #[serde(rename = "protocolBindings", default)]
+    pub protocol_bindings: Vec<ProtocolBinding>,
+    #[serde(rename = "implementationLinks", default)]
+    pub implementation_links: Vec<ImplementationLink>,
+    #[serde(rename = "credentialRequirements", default)]
+    pub credential_requirements: Vec<CredentialRequirement>,
+    #[serde(rename = "packageInfo", skip_serializing_if = "Option::is_none")]
+    pub package_info: Option<PackageInfo>,
     #[serde(rename = "servicePolicy", skip_serializing_if = "Option::is_none")]
     pub service_policy: Option<String>,
     #[serde(rename = "networkScope", skip_serializing_if = "Option::is_none")]
     pub network_scope: Option<String>,
+    #[serde(rename = "lifecycleState", skip_serializing_if = "Option::is_none")]
+    pub lifecycle_state: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -233,8 +412,8 @@ pub struct DidDocument {
     pub assertion_method: Vec<String>,
     #[serde(default)]
     pub service: Vec<ServiceEndpoint>,
-    #[serde(rename = "ansMetadata", skip_serializing_if = "Option::is_none")]
-    pub ans_metadata: Option<AnsMetadata>,
+    #[serde(rename = "oanMetadata", skip_serializing_if = "Option::is_none")]
+    pub oan_metadata: Option<OanMetadata>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,6 +542,12 @@ pub enum DidDocumentError {
     MissingAuthentication,
     #[error("did document must include at least one assertion method")]
     MissingAssertionMethod,
+    #[error("oan metadata missing")]
+    MissingOanMetadata,
+    #[error("oan subject type and resource type must match for discoverable resources")]
+    ResourceTypeMismatch,
+    #[error("did subject code and oan resource type do not match")]
+    SubjectCodeResourceTypeMismatch,
 }
 
 impl DidDocument {
@@ -385,6 +570,37 @@ impl DidDocument {
         }
         if self.assertion_method.is_empty() {
             return Err(DidDocumentError::MissingAssertionMethod);
+        }
+        Ok(())
+    }
+
+    pub fn validate_oan_resource(&self) -> Result<(), DidDocumentError> {
+        self.validate_mvp()?;
+        let metadata = self
+            .oan_metadata
+            .as_ref()
+            .ok_or(DidDocumentError::MissingOanMetadata)?;
+        if metadata.subject_type != metadata.resource_type {
+            return Err(DidDocumentError::ResourceTypeMismatch);
+        }
+        let parts = self.id.split(':').collect::<Vec<_>>();
+        if parts.len() != 4
+            || parts[0] != "did"
+            || parts[1] != "oan"
+            || parts[2].len() != 4
+            || !parts[2]
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+            || parts[3].len() != 32
+            || !parts[3]
+                .chars()
+                .all(|ch| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(ch))
+        {
+            return Err(DidDocumentError::SubjectCodeResourceTypeMismatch);
+        }
+        let subject_code = &parts[2][..2];
+        if subject_code != metadata.resource_type.expected_subject_code() {
+            return Err(DidDocumentError::SubjectCodeResourceTypeMismatch);
         }
         Ok(())
     }

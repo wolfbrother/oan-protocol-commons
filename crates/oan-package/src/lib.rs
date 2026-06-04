@@ -6,7 +6,7 @@
 //! Verified package, manifest, and metadata models.
 
 use chrono::{DateTime, Utc};
-use oan_core::{CryptoSuite, DataIntegrityProof, DidDocument};
+use oan_core::{CryptoSuite, DataIntegrityProof, DidDocument, ResourceType, ServiceEndpoint};
 use oan_crypto::{hash_json_with_suite, CryptoError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -19,21 +19,45 @@ pub enum PackageError {
     DidDocumentHashMismatch,
     #[error("metadata hash mismatch")]
     MetadataHashMismatch,
+    #[error("package hash mismatch")]
+    PackageHashMismatch,
+    #[error("root proof claim mismatch")]
+    RootProofClaimMismatch,
+    #[error("resource type mismatch")]
+    ResourceTypeMismatch,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AgentMetadata {
-    pub did: String,
-    pub role: String,
-    #[serde(rename = "identityType")]
-    pub identity_type: String,
-    #[serde(rename = "didDocumentHash")]
-    pub did_document_hash: String,
+pub struct ResourceMetadata {
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "resourceType")]
+    pub resource_type: ResourceType,
+    #[serde(rename = "subjectType")]
+    pub subject_type: ResourceType,
+    #[serde(rename = "publisherDid", skip_serializing_if = "Option::is_none")]
+    pub publisher_did: Option<String>,
+    #[serde(rename = "subjectDid", skip_serializing_if = "Option::is_none")]
+    pub subject_did: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
     #[serde(rename = "capabilityTags", default)]
     pub capability_tags: Vec<String>,
+    #[serde(rename = "protocolBindings", default)]
+    pub protocol_bindings: Vec<serde_json::Value>,
     #[serde(default)]
-    pub services: Vec<oan_core::ServiceEndpoint>,
-    pub status: String,
+    pub services: Vec<ServiceEndpoint>,
+    #[serde(rename = "lifecycleState")]
+    pub lifecycle_state: String,
+    #[serde(rename = "packageVersion")]
+    pub package_version: String,
+    #[serde(rename = "packageHash")]
+    pub package_hash: String,
+    #[serde(rename = "metadataHash")]
+    pub metadata_hash: String,
+    #[serde(rename = "hashAlgorithm")]
+    pub hash_algorithm: String,
     #[serde(rename = "updatedAt")]
     pub updated_at: DateTime<Utc>,
 }
@@ -55,55 +79,53 @@ pub struct RootProof {
     pub hash_algorithm: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourcePackageClaims {
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "resourceType")]
+    pub resource_type: ResourceType,
+    pub version: String,
+    #[serde(rename = "didDocumentHash")]
+    pub did_document_hash: String,
+    #[serde(rename = "metadataHash")]
+    pub metadata_hash: String,
+    #[serde(rename = "packageHash")]
+    pub package_hash: String,
+    #[serde(rename = "hashAlgorithm")]
+    pub hash_algorithm: String,
+    #[serde(rename = "lifecycleState")]
+    pub lifecycle_state: String,
+    #[serde(rename = "bulletinRef", skip_serializing_if = "Option::is_none")]
+    pub bulletin_ref: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VerifiedPackage {
+pub struct ResourcePackage {
     #[serde(rename = "packageVersion")]
     pub package_version: String,
-    pub did: String,
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "resourceType")]
+    pub resource_type: ResourceType,
     #[serde(rename = "didDocument")]
     pub did_document: DidDocument,
     #[serde(rename = "didDocumentHash")]
     pub did_document_hash: String,
-    #[serde(
-        rename = "metadataHash",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub metadata_hash: Option<String>,
-    pub metadata: AgentMetadata,
+    #[serde(rename = "metadataHash")]
+    pub metadata_hash: String,
+    #[serde(rename = "packageHash")]
+    pub package_hash: String,
+    #[serde(rename = "hashAlgorithm")]
+    pub hash_algorithm: String,
+    pub metadata: ResourceMetadata,
     #[serde(rename = "rootProof")]
     pub root_proof: RootProof,
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManifestEntry {
-    pub did: String,
-    pub role: String,
-    #[serde(rename = "documentPath")]
-    pub document_path: String,
-    #[serde(rename = "metadataPath")]
-    pub metadata_path: String,
-    #[serde(rename = "packagePath")]
-    pub package_path: String,
-    #[serde(rename = "didDocumentHash")]
-    pub did_document_hash: String,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Manifest {
-    pub version: String,
-    #[serde(rename = "generatedAt")]
-    pub generated_at: DateTime<Utc>,
-    #[serde(rename = "rootDid")]
-    pub root_did: String,
-    pub packages: Vec<ManifestEntry>,
-}
-
-impl VerifiedPackage {
+impl ResourcePackage {
     fn effective_crypto_suite(&self) -> CryptoSuite {
         self.root_proof
             .crypto_suite
@@ -114,12 +136,12 @@ impl VerifiedPackage {
                     .as_ref()
                     .and_then(|proof| proof.crypto_suite())
             })
-            .unwrap_or(CryptoSuite::Ed25519Sha256Legacy)
+            .unwrap_or(CryptoSuite::Ed25519Sha256)
     }
 
-    pub fn verify_document_hash(&self) -> Result<(), PackageError> {
+    pub fn verify_did_document_hash(&self) -> Result<(), PackageError> {
         let actual_hash = hash_json_with_suite(self.effective_crypto_suite(), &self.did_document)?;
-        if actual_hash == self.did_document_hash {
+        if hash_matches(&self.did_document_hash, &self.hash_algorithm, &actual_hash) {
             Ok(())
         } else {
             Err(PackageError::DidDocumentHashMismatch)
@@ -127,15 +149,91 @@ impl VerifiedPackage {
     }
 
     pub fn verify_metadata_hash(&self) -> Result<(), PackageError> {
-        let Some(expected_hash) = self.metadata_hash.as_deref() else {
-            return Ok(());
-        };
-        let actual_hash = hash_json_with_suite(self.effective_crypto_suite(), &self.metadata)?;
-        if actual_hash == expected_hash {
+        let actual_hash =
+            hash_resource_metadata_with_suite(self.effective_crypto_suite(), &self.metadata)?;
+        if hash_matches(&self.metadata_hash, &self.hash_algorithm, &actual_hash) {
             Ok(())
         } else {
             Err(PackageError::MetadataHashMismatch)
         }
     }
+
+    pub fn verify_package_hash(&self) -> Result<(), PackageError> {
+        let actual_hash = hash_json_with_suite(
+            self.effective_crypto_suite(),
+            &serde_json::json!({
+                "packageVersion": self.package_version,
+                "resourceDid": self.resource_did,
+                "resourceType": self.resource_type,
+                "didDocumentHash": self.did_document_hash,
+                "metadataHash": self.metadata_hash,
+                "hashAlgorithm": self.hash_algorithm,
+            }),
+        )?;
+        if hash_matches(&self.package_hash, &self.hash_algorithm, &actual_hash) {
+            Ok(())
+        } else {
+            Err(PackageError::PackageHashMismatch)
+        }
+    }
+
+    pub fn verify_resource_type_consistency(&self) -> Result<(), PackageError> {
+        if self.resource_type == self.metadata.resource_type
+            && self.resource_type == self.metadata.subject_type
+        {
+            Ok(())
+        } else {
+            Err(PackageError::ResourceTypeMismatch)
+        }
+    }
+
+    pub fn verify_metadata_consistency(&self) -> Result<(), PackageError> {
+        if self.metadata.resource_did == self.resource_did
+            && self.metadata.package_version == self.package_version
+            && self.metadata.package_hash == self.package_hash
+            && self.metadata.metadata_hash == self.metadata_hash
+            && self.metadata.hash_algorithm == self.hash_algorithm
+        {
+            Ok(())
+        } else {
+            Err(PackageError::RootProofClaimMismatch)
+        }
+    }
+
+    pub fn verify_root_claim_binding(&self) -> Result<(), PackageError> {
+        let Some(claims) = self.root_proof.package_claims.as_ref() else {
+            return Err(PackageError::RootProofClaimMismatch);
+        };
+        let parsed: ResourcePackageClaims = serde_json::from_value(claims.clone())
+            .map_err(|_| PackageError::RootProofClaimMismatch)?;
+
+        if parsed.resource_did == self.resource_did
+            && parsed.resource_type == self.resource_type
+            && parsed.version == self.package_version
+            && parsed.did_document_hash == self.did_document_hash
+            && parsed.metadata_hash == self.metadata_hash
+            && parsed.package_hash == self.package_hash
+            && parsed.hash_algorithm == self.hash_algorithm
+            && parsed.lifecycle_state == self.metadata.lifecycle_state
+        {
+            Ok(())
+        } else {
+            Err(PackageError::RootProofClaimMismatch)
+        }
+    }
+}
+
+pub fn hash_resource_metadata_with_suite(
+    suite: CryptoSuite,
+    metadata: &ResourceMetadata,
+) -> Result<String, CryptoError> {
+    let mut normalized = metadata.clone();
+    normalized.metadata_hash.clear();
+    normalized.package_hash.clear();
+    hash_json_with_suite(suite, &normalized)
+}
+
+fn hash_matches(expected: &str, algorithm: &str, actual: &str) -> bool {
+    expected == actual || expected == format!("{algorithm}:{actual}")
 }
 

@@ -6,17 +6,19 @@
 //! Protocol models shared across OpenAgenet nodes.
 
 use chrono::{DateTime, Utc};
-use oan_core::{DataIntegrityProof, DidDocument};
-use oan_package::VerifiedPackage;
+use oan_core::{DataIntegrityProof, DidDocument, ResourceType, ServiceEndpoint};
+use oan_did_oan::DidOan;
+use oan_package::ResourcePackage;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: &str = "ans-2026";
-pub const PURPOSE_AGENT_REGISTRATION: &str = "agent-registration";
+pub const OAN_RESOURCE_PROTOCOL_VERSION: &str = "oan-resource-2026";
+pub const PROTOCOL_VERSION: &str = OAN_RESOURCE_PROTOCOL_VERSION;
+pub const PURPOSE_RESOURCE_REGISTRATION: &str = "resource-registration";
 pub const PURPOSE_VERIFY_AND_PUBLISH: &str = "verify-and-publish";
 pub const PURPOSE_CDN_PUBLISH: &str = "cdn-publish";
-pub const PATH_ROOT_VERIFY_AND_PUBLISH: &str = "/root/agents/verify-and-publish";
-pub const PATH_CDN_PACKAGES: &str = "/cdn/packages";
+pub const PATH_ROOT_RESOURCES_VERIFY_AND_PUBLISH: &str = "/root/resources/verify-and-publish";
+pub const PATH_CDN_RESOURCES: &str = "/cdn/resources";
 pub const REGISTRATION_FLOW: &str = "did-control";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,9 +61,11 @@ pub struct DiscoveryDomainUpdateRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AgentRegisterRequest {
-    #[serde(rename = "agentDid")]
-    pub agent_did: String,
+pub struct ResourceRegisterRequest {
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "resourceType")]
+    pub resource_type: ResourceType,
     #[serde(rename = "didDocument")]
     pub did_document: DidDocument,
     pub metadata: Value,
@@ -125,32 +129,91 @@ pub struct SubjectControlProofBundle {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct AgentRegistrationSubmission {
-    #[serde(rename = "agentDid")]
-    pub agent_did: String,
+pub struct ResourceRegistrationSubmission {
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "resourceType")]
+    pub resource_type: ResourceType,
     #[serde(rename = "didDocument")]
     pub did_document: DidDocument,
     #[serde(rename = "didDocumentHash")]
     pub did_document_hash: String,
     pub metadata: Value,
+    #[serde(rename = "packageVersion")]
+    pub package_version: String,
+    #[serde(rename = "packageHash")]
+    pub package_hash: String,
+    #[serde(rename = "metadataHash")]
+    pub metadata_hash: String,
+    #[serde(rename = "hashAlgorithm")]
+    pub hash_algorithm: String,
     #[serde(rename = "registrationCredential")]
     pub registration_credential: Value,
     #[serde(rename = "subjectControlProof")]
     pub subject_control_proof: SubjectControlProofBundle,
 }
 
+impl ResourceRegistrationSubmission {
+    pub fn validate_shape(&self) -> Result<(), String> {
+        let did = DidOan::parse(&self.resource_did).map_err(|err| err.to_string())?;
+        did.validate_resource_type(self.resource_type.as_str())
+            .map_err(|err| err.to_string())?;
+        if self.did_document.id != self.resource_did {
+            return Err("did_document_id_mismatch".to_owned());
+        }
+        self.did_document
+            .validate_oan_resource()
+            .map_err(|err| err.to_string())?;
+        if self.package_version.trim().is_empty() {
+            return Err("empty_package_version".to_owned());
+        }
+        if self.hash_algorithm.trim().is_empty() {
+            return Err("empty_hash_algorithm".to_owned());
+        }
+        validate_hash_reference(
+            "did_document_hash",
+            &self.did_document_hash,
+            &self.hash_algorithm,
+        )?;
+        validate_hash_reference("metadata_hash", &self.metadata_hash, &self.hash_algorithm)?;
+        validate_hash_reference("package_hash", &self.package_hash, &self.hash_algorithm)?;
+        let challenge = &self.subject_control_proof.challenge;
+        if challenge.subject_did != self.resource_did {
+            return Err("challenge_subject_did_mismatch".to_owned());
+        }
+        if challenge.did_document_hash != self.did_document_hash {
+            return Err("challenge_did_document_hash_mismatch".to_owned());
+        }
+        if challenge.purpose != PURPOSE_RESOURCE_REGISTRATION {
+            return Err("challenge_purpose_mismatch".to_owned());
+        }
+        Ok(())
+    }
+}
+
+fn validate_hash_reference(field_name: &str, value: &str, algorithm: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("empty_{field_name}"));
+    }
+    let expected_prefix = format!("{algorithm}:");
+    if value.contains(':') && !value.starts_with(&expected_prefix) {
+        return Err(format!("{field_name}_algorithm_mismatch"));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct VerifyAndPublishRequest {
+pub struct ResourceVerifyAndPublishRequest {
     #[serde(rename = "registrarDid")]
     pub registrar_did: String,
-    pub submission: AgentRegistrationSubmission,
+    pub submission: ResourceRegistrationSubmission,
     #[serde(rename = "upstreamAuth")]
     pub upstream_auth: SignedRequestEnvelope,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CdnPublishRequest {
-    pub package: VerifiedPackage,
+pub struct ResourceCdnPublishRequest {
+    pub package: ResourcePackage,
     #[serde(rename = "upstreamAuth")]
     pub upstream_auth: SignedRequestEnvelope,
 }
@@ -168,15 +231,19 @@ pub struct RootAuthorizeRequest {
 pub type DiscoveryResponseProof = DataIntegrityProof;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DiscoveryQuery {
+pub struct ResourceDiscoveryQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    #[serde(rename = "resourceType", skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<ResourceType>,
     #[serde(rename = "capabilityTags", default)]
     pub capability_tags: Vec<String>,
-    #[serde(rename = "serviceType", skip_serializing_if = "Option::is_none")]
-    pub service_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(rename = "versionMode", default = "default_version_mode")]
+    pub version_mode: String,
     #[serde(default = "default_limit")]
     pub limit: u32,
 }
@@ -185,38 +252,62 @@ fn default_limit() -> u32 {
     10
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DiscoveryCandidate {
-    pub did: String,
-    pub score: f32,
-    #[serde(rename = "capabilityTags", default)]
-    pub capability_tags: Vec<String>,
-    #[serde(default)]
-    pub services: Vec<oan_core::ServiceEndpoint>,
+fn default_version_mode() -> String {
+    "latest".to_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DiscoveryResponse {
+pub struct ResourceDiscoveryCandidate {
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "resourceType")]
+    pub resource_type: ResourceType,
+    pub score: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(rename = "lifecycleState", skip_serializing_if = "Option::is_none")]
+    pub lifecycle_state: Option<String>,
+    #[serde(rename = "capabilityTags", default)]
+    pub capability_tags: Vec<String>,
+    #[serde(default)]
+    pub services: Vec<ServiceEndpoint>,
+    #[serde(rename = "protocolBindings", default)]
+    pub protocol_bindings: Vec<Value>,
+    #[serde(rename = "packageInfo", skip_serializing_if = "Option::is_none")]
+    pub package_info: Option<Value>,
+    #[serde(rename = "rootProof", skip_serializing_if = "Option::is_none")]
+    pub root_proof: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceDiscoveryResponse {
     #[serde(rename = "discoveryDid")]
     pub discovery_did: String,
-    pub candidates: Vec<DiscoveryCandidate>,
+    pub candidates: Vec<ResourceDiscoveryCandidate>,
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
-    pub signature: String,
     pub proof: Option<DiscoveryResponseProof>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RootDiscoveryNotificationItem {
-    #[serde(rename = "agentDid")]
-    pub agent_did: String,
+pub struct ResourceRootDiscoveryNotificationItem {
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "resourceType")]
+    pub resource_type: ResourceType,
     pub operation: String,
-    #[serde(rename = "documentVersion")]
-    pub document_version: u64,
+    #[serde(rename = "packageVersion")]
+    pub package_version: String,
     #[serde(rename = "didDocumentHash")]
     pub did_document_hash: String,
     #[serde(rename = "metadataHash")]
     pub metadata_hash: String,
+    #[serde(rename = "packageHash")]
+    pub package_hash: String,
+    #[serde(rename = "hashAlgorithm")]
+    pub hash_algorithm: String,
+    #[serde(rename = "lifecycleState")]
+    pub lifecycle_state: String,
     #[serde(rename = "bulletinSequence")]
     pub bulletin_sequence: u64,
     #[serde(rename = "bulletinEventHash")]
@@ -226,7 +317,7 @@ pub struct RootDiscoveryNotificationItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct RootDiscoveryBatchNotification {
+pub struct ResourceRootDiscoveryBatchNotification {
     #[serde(rename = "notificationBatchId")]
     pub notification_batch_id: String,
     #[serde(rename = "rootDid")]
@@ -239,7 +330,7 @@ pub struct RootDiscoveryBatchNotification {
     pub sequence_from: u64,
     #[serde(rename = "sequenceTo")]
     pub sequence_to: u64,
-    pub items: Vec<RootDiscoveryNotificationItem>,
+    pub items: Vec<ResourceRootDiscoveryNotificationItem>,
     #[serde(rename = "cdnManifestUrl")]
     pub cdn_manifest_url: String,
     #[serde(rename = "cdnUpdatesUrl")]

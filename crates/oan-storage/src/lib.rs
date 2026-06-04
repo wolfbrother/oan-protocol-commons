@@ -340,6 +340,33 @@ impl SqliteJsonStore {
             .collect()
     }
 
+    pub async fn read_ready_leased_jobs<T: DeserializeOwned>(
+        &self,
+        table: &str,
+        now: &str,
+    ) -> Result<Vec<T>, StorageError> {
+        let table = validated_identifier(table)?;
+        let sql = format!(
+            r#"
+            SELECT payload_json
+            FROM {table}
+            WHERE
+                status = 'ready'
+                OR (status = 'retry-wait' AND next_attempt_at <= ?)
+                OR (status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+            ORDER BY next_attempt_at, created_at, job_key
+            "#
+        );
+        let rows = sqlx::query_as::<_, (String,)>(sql.as_str())
+            .bind(now)
+            .bind(now)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|(value_json,)| serde_json::from_str(&value_json).map_err(StorageError::from))
+            .collect()
+    }
+
     pub async fn upsert_json<T: Serialize>(
         &self,
         namespace: &str,
@@ -640,6 +667,32 @@ impl PostgresJsonStore {
             .collect()
     }
 
+    pub async fn read_ready_leased_jobs<T: DeserializeOwned>(
+        &self,
+        table: &str,
+        now: &str,
+    ) -> Result<Vec<T>, StorageError> {
+        let table = validated_identifier(table)?;
+        let sql = format!(
+            r#"
+            SELECT payload_json
+            FROM {table}
+            WHERE
+                status = 'ready'
+                OR (status = 'retry-wait' AND next_attempt_at <= $1::timestamptz)
+                OR (status = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at <= $1::timestamptz)
+            ORDER BY next_attempt_at, created_at, job_key
+            "#
+        );
+        let rows = sqlx::query_as::<_, (String,)>(sql.as_str())
+            .bind(now)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter()
+            .map(|(value_json,)| serde_json::from_str(&value_json).map_err(StorageError::from))
+            .collect()
+    }
+
     pub async fn upsert_json<T: Serialize>(
         &self,
         namespace: &str,
@@ -879,34 +932,34 @@ impl LocalCredentialStore {
         self.store.read("credentials/node-authorization.json")
     }
 
-    pub fn write_agent_registration<T: Serialize>(
+    pub fn write_resource_registration<T: Serialize>(
         &self,
-        agent_did: &str,
+        resource_did: &str,
         credential: &T,
     ) -> Result<(), StorageError> {
         self.write_credential(
-            "agent-registration",
+            "resource-registration",
             "registrar",
-            agent_did,
+            resource_did,
             "latest",
             credential,
         )?;
         self.store.write(
             Path::new("credentials")
-                .join("agent-registrations")
-                .join(did_to_file_name(agent_did)),
+                .join("resource-registrations")
+                .join(did_to_file_name(resource_did)),
             credential,
         )
     }
 
-    pub fn read_agent_registration<T: DeserializeOwned>(
+    pub fn read_resource_registration<T: DeserializeOwned>(
         &self,
-        agent_did: &str,
+        resource_did: &str,
     ) -> Result<T, StorageError> {
         self.store.read(
             Path::new("credentials")
-                .join("agent-registrations")
-                .join(did_to_file_name(agent_did)),
+                .join("resource-registrations")
+                .join(did_to_file_name(resource_did)),
         )
     }
 
