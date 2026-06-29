@@ -44,6 +44,8 @@ pub struct ResourceMetadata {
     pub description: String,
     #[serde(rename = "capabilityTags", default)]
     pub capability_tags: Vec<String>,
+    #[serde(rename = "authorizedDomains", default)]
+    pub authorized_domains: Vec<String>,
     #[serde(rename = "protocolBindings", default)]
     pub protocol_bindings: Vec<serde_json::Value>,
     #[serde(default)]
@@ -96,6 +98,8 @@ pub struct ResourcePackageClaims {
     pub hash_algorithm: String,
     #[serde(rename = "lifecycleState")]
     pub lifecycle_state: String,
+    #[serde(rename = "authorizedDomains", default)]
+    pub authorized_domains: Vec<String>,
     #[serde(rename = "bulletinRef", skip_serializing_if = "Option::is_none")]
     pub bulletin_ref: Option<String>,
 }
@@ -188,11 +192,18 @@ impl ResourcePackage {
     }
 
     pub fn verify_metadata_consistency(&self) -> Result<(), PackageError> {
+        let did_document_domains = self
+            .did_document
+            .oan_metadata
+            .as_ref()
+            .map(|metadata| metadata.authorized_domains.as_slice())
+            .unwrap_or_default();
         if self.metadata.resource_did == self.resource_did
             && self.metadata.package_version == self.package_version
             && self.metadata.package_hash == self.package_hash
             && self.metadata.metadata_hash == self.metadata_hash
             && self.metadata.hash_algorithm == self.hash_algorithm
+            && did_document_domains == self.metadata.authorized_domains.as_slice()
         {
             Ok(())
         } else {
@@ -215,6 +226,7 @@ impl ResourcePackage {
             && parsed.package_hash == self.package_hash
             && parsed.hash_algorithm == self.hash_algorithm
             && parsed.lifecycle_state == self.metadata.lifecycle_state
+            && parsed.authorized_domains == self.metadata.authorized_domains
         {
             Ok(())
         } else {

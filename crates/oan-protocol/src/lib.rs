@@ -332,6 +332,8 @@ pub struct ResourceDiscoveryCandidate {
     pub lifecycle_state: Option<String>,
     #[serde(rename = "capabilityTags", default)]
     pub capability_tags: Vec<String>,
+    #[serde(rename = "authorizedDomains", default)]
+    pub authorized_domains: Vec<String>,
     #[serde(default)]
     pub services: Vec<ServiceEndpoint>,
     #[serde(rename = "protocolBindings", default)]
@@ -377,6 +379,8 @@ pub struct ResourceRootDiscoveryNotificationItem {
     pub bulletin_event_hash: String,
     #[serde(rename = "capabilityTags", default)]
     pub capability_tags: Vec<String>,
+    #[serde(rename = "authorizedDomains", default)]
+    pub authorized_domains: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

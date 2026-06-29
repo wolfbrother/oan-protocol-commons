@@ -381,6 +381,8 @@ pub struct OanMetadata {
     pub agent_description: Option<AgentDescription>,
     #[serde(rename = "capabilityTags", default)]
     pub capability_tags: Vec<String>,
+    #[serde(rename = "authorizedDomains", default)]
+    pub authorized_domains: Vec<String>,
     #[serde(rename = "protocolBindings", default)]
     pub protocol_bindings: Vec<ProtocolBinding>,
     #[serde(rename = "implementationLinks", default)]
@@ -527,6 +529,193 @@ impl CapabilityTagTree {
         for node in &self.tree {
             walk(node, None, &mut self.tags);
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizedDomain {
+    pub id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizedDomainTreeNode {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<AuthorizedDomainTreeNode>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorizedDomainTaxonomy {
+    pub version: u64,
+    #[serde(rename = "snapshotHash", skip_serializing_if = "Option::is_none")]
+    pub snapshot_hash: Option<String>,
+    #[serde(default)]
+    pub domains: Vec<AuthorizedDomain>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tree: Vec<AuthorizedDomainTreeNode>,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum AuthorizedDomainError {
+    #[error("authorized domain list must not mix wildcard with concrete domains")]
+    WildcardMixed,
+    #[error("authorized domains must be sorted and unique")]
+    DuplicateOrUnsorted,
+    #[error("authorized domain is empty")]
+    EmptyDomain,
+    #[error("authorized domain is not canonical")]
+    NonCanonicalDomain,
+    #[error("authorized domain is unknown")]
+    UnknownDomain,
+}
+
+impl AuthorizedDomainTaxonomy {
+    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self, oan_storage::StorageError> {
+        let store = oan_storage::JsonStore::new(".");
+        let mut taxonomy: Self = store.read(path)?;
+        if taxonomy.domains.is_empty() && !taxonomy.tree.is_empty() {
+            taxonomy.flatten_tree();
+        }
+        Ok(taxonomy)
+    }
+
+    pub fn normalize_domain<'a>(&'a self, value: &str) -> Option<&'a str> {
+        self.domains.iter().find_map(|domain| {
+            if domain.id == value || domain.aliases.iter().any(|alias| alias == value) {
+                Some(domain.id.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn validate_authorized_domains(
+        &self,
+        domains: &[String],
+    ) -> Result<Vec<String>, AuthorizedDomainError> {
+        if domains.is_empty() {
+            return Ok(Vec::new());
+        }
+        if domains.iter().any(|domain| domain == "*") {
+            return if domains.len() == 1 {
+                Ok(vec!["*".to_owned()])
+            } else {
+                Err(AuthorizedDomainError::WildcardMixed)
+            };
+        }
+
+        let mut normalized = Vec::with_capacity(domains.len());
+        for domain in domains {
+            if domain.is_empty() {
+                return Err(AuthorizedDomainError::EmptyDomain);
+            }
+            let canonical = self
+                .normalize_domain(domain)
+                .ok_or(AuthorizedDomainError::UnknownDomain)?;
+            if canonical != domain {
+                return Err(AuthorizedDomainError::NonCanonicalDomain);
+            }
+            if canonical.matches('.').count() > 1 {
+                return Err(AuthorizedDomainError::NonCanonicalDomain);
+            }
+            normalized.push(canonical.to_owned());
+        }
+
+        if normalized.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(AuthorizedDomainError::DuplicateOrUnsorted);
+        }
+
+        Ok(normalized)
+    }
+
+    pub fn covers_authorized_domains(
+        &self,
+        requested_domains: &[String],
+        granted_domains: &[String],
+    ) -> bool {
+        if requested_domains.is_empty() {
+            return true;
+        }
+        if granted_domains.iter().any(|domain| domain == "*") {
+            return true;
+        }
+        if granted_domains.is_empty() {
+            return false;
+        }
+
+        requested_domains.iter().all(|requested| {
+            let Some(normalized_requested) = self.normalize_domain(requested) else {
+                return false;
+            };
+            granted_domains.iter().any(|granted| {
+                self.normalize_domain(granted)
+                    .is_some_and(|normalized_granted| {
+                        self.is_descendant_or_same(normalized_requested, normalized_granted)
+                    })
+            })
+        })
+    }
+
+    pub fn flatten_tree(&mut self) {
+        if !self.domains.is_empty() || self.tree.is_empty() {
+            return;
+        }
+
+        fn walk(
+            node: &AuthorizedDomainTreeNode,
+            parent: Option<&str>,
+            domains: &mut Vec<AuthorizedDomain>,
+        ) {
+            domains.push(AuthorizedDomain {
+                id: node.id.clone(),
+                label: node.label.clone(),
+                parent: parent.map(ToOwned::to_owned),
+                aliases: vec![],
+            });
+            for child in &node.children {
+                walk(child, Some(node.id.as_str()), domains);
+            }
+        }
+
+        for node in &self.tree {
+            walk(node, None, &mut self.domains);
+        }
+    }
+
+    fn is_descendant_or_same(&self, domain_id: &str, granted_domain_id: &str) -> bool {
+        if granted_domain_id == "*" || domain_id == granted_domain_id {
+            return true;
+        }
+
+        let by_id = self
+            .domains
+            .iter()
+            .map(|domain| (domain.id.as_str(), domain))
+            .collect::<BTreeMap<_, _>>();
+        let mut current = by_id
+            .get(domain_id)
+            .and_then(|domain| domain.parent.as_deref());
+        let mut seen = BTreeSet::new();
+
+        while let Some(parent) = current {
+            if parent == granted_domain_id {
+                return true;
+            }
+            if !seen.insert(parent) {
+                return false;
+            }
+            current = by_id
+                .get(parent)
+                .and_then(|domain| domain.parent.as_deref());
+        }
+
+        false
     }
 }
 
