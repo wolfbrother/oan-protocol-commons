@@ -11,7 +11,9 @@ use oan_crypto::{
     verify_payload_with_proof, verifying_key_from_method, SigningKey,
 };
 use oan_protocol::{
-    DidControlChallenge, SignedRequestEnvelope, SubjectControlProofBundle, REGISTRATION_FLOW,
+    ControllerAuthorizationChallenge, ControllerAuthorizationProofBundle, DidControlChallenge,
+    SignedRequestEnvelope, SubjectControlProofBundle,
+    PURPOSE_CONTROLLER_AUTHORIZATION_REGISTRATION, REGISTRATION_FLOW,
 };
 use oan_storage::JsonStore;
 use serde::{Deserialize, Serialize};
@@ -50,6 +52,7 @@ impl From<anyhow::Error> for SecurityError {
 pub enum VerificationRelationship {
     AssertionMethod,
     Authentication,
+    CapabilityInvocation,
 }
 
 impl VerificationRelationship {
@@ -57,6 +60,7 @@ impl VerificationRelationship {
         match self {
             Self::AssertionMethod => "assertionMethod",
             Self::Authentication => "authentication",
+            Self::CapabilityInvocation => "capabilityInvocation",
         }
     }
 }
@@ -114,6 +118,18 @@ pub struct DidControlPolicy {
 pub struct DidControlVerificationContext<'a> {
     pub expected_subject_did: &'a str,
     pub expected_did_document_hash: &'a str,
+    pub expected_registrar_did: &'a str,
+    pub expected_purpose: &'a str,
+    pub now: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ControllerAuthorizationVerificationContext<'a> {
+    pub expected_resource_did: &'a str,
+    pub expected_controller_did: &'a str,
+    pub expected_publisher_did: Option<&'a str>,
+    pub expected_did_document_hash: &'a str,
+    pub expected_metadata_hash: &'a str,
     pub expected_registrar_did: &'a str,
     pub expected_purpose: &'a str,
     pub now: DateTime<Utc>,
@@ -214,6 +230,7 @@ pub fn find_relationship_method<'a>(
     let ids = match relationship {
         VerificationRelationship::AssertionMethod => &did_document.assertion_method,
         VerificationRelationship::Authentication => &did_document.authentication,
+        VerificationRelationship::CapabilityInvocation => &did_document.capability_invocation,
     };
     let method = did_document
         .verification_method
@@ -406,6 +423,166 @@ pub fn create_did_control_challenge(
         nonce,
         issued_at,
         expires_at: issued_at + Duration::seconds(policy.challenge_ttl_seconds),
+    }
+}
+
+pub struct ControllerAuthorizationChallengeInput<'a> {
+    pub resource_did: &'a str,
+    pub controller_did: &'a str,
+    pub publisher_did: Option<&'a str>,
+    pub did_document_hash: &'a str,
+    pub metadata_hash: &'a str,
+    pub registrar_did: &'a str,
+    pub verification_method: &'a str,
+    pub ttl_seconds: i64,
+    pub nonce: String,
+}
+
+pub fn create_controller_authorization_challenge(
+    input: ControllerAuthorizationChallengeInput<'_>,
+) -> ControllerAuthorizationChallenge {
+    let issued_at = Utc::now();
+    ControllerAuthorizationChallenge {
+        challenge_id: format!(
+            "controller-auth-{}-{}",
+            input.resource_did.replace(':', "-"),
+            issued_at.timestamp_millis()
+        ),
+        resource_did: input.resource_did.to_owned(),
+        controller_did: input.controller_did.to_owned(),
+        publisher_did: input.publisher_did.map(ToOwned::to_owned),
+        did_document_hash: input.did_document_hash.to_owned(),
+        metadata_hash: input.metadata_hash.to_owned(),
+        registrar_did: input.registrar_did.to_owned(),
+        purpose: PURPOSE_CONTROLLER_AUTHORIZATION_REGISTRATION.to_owned(),
+        verification_method: input.verification_method.to_owned(),
+        nonce: input.nonce,
+        issued_at,
+        expires_at: issued_at + Duration::seconds(input.ttl_seconds),
+    }
+}
+
+pub fn verify_controller_authorization_proof(
+    bundle: &ControllerAuthorizationProofBundle,
+    context: &ControllerAuthorizationVerificationContext<'_>,
+) -> Result<String, SecurityError> {
+    let challenge = &bundle.challenge;
+    if challenge.resource_did != context.expected_resource_did {
+        return Err(SecurityError::code(
+            "controller_authorization_resource_mismatch",
+        ));
+    }
+    if challenge.controller_did != context.expected_controller_did {
+        return Err(SecurityError::code(
+            "controller_authorization_controller_mismatch",
+        ));
+    }
+    if challenge.publisher_did.as_deref() != context.expected_publisher_did {
+        return Err(SecurityError::code(
+            "controller_authorization_publisher_mismatch",
+        ));
+    }
+    if challenge.did_document_hash != context.expected_did_document_hash {
+        return Err(SecurityError::code(
+            "controller_authorization_did_document_hash_mismatch",
+        ));
+    }
+    if challenge.metadata_hash != context.expected_metadata_hash {
+        return Err(SecurityError::code(
+            "controller_authorization_metadata_hash_mismatch",
+        ));
+    }
+    if challenge.registrar_did != context.expected_registrar_did {
+        return Err(SecurityError::code(
+            "controller_authorization_registrar_mismatch",
+        ));
+    }
+    if challenge.purpose != context.expected_purpose {
+        return Err(SecurityError::code(
+            "controller_authorization_purpose_mismatch",
+        ));
+    }
+    if context.now > challenge.expires_at {
+        return Err(SecurityError::code(
+            "controller_authorization_challenge_expired",
+        ));
+    }
+    if bundle.controller_did_document.id != challenge.controller_did {
+        return Err(SecurityError::code(
+            "controller_authorization_did_document_id_mismatch",
+        ));
+    }
+    reject_private_key_material(&bundle.controller_did_document)?;
+    let method = find_relationship_method(
+        &bundle.controller_did_document,
+        VerificationRelationship::CapabilityInvocation,
+        Some(&challenge.verification_method),
+    )
+    .or_else(|_| {
+        find_relationship_method(
+            &bundle.controller_did_document,
+            VerificationRelationship::AssertionMethod,
+            Some(&challenge.verification_method),
+        )
+    })?;
+    if method.controller != challenge.controller_did {
+        return Err(SecurityError::code(
+            "controller_authorization_method_controller_mismatch",
+        ));
+    }
+    let verifying_key = verifying_key_from_method(method)
+        .map_err(|_| SecurityError::code("controller_authorization_proof_invalid"))?;
+    if bundle.proof.proof_purpose != VerificationRelationship::CapabilityInvocation.as_str()
+        && bundle.proof.proof_purpose != VerificationRelationship::AssertionMethod.as_str()
+    {
+        return Err(SecurityError::code(
+            "controller_authorization_proof_purpose_mismatch",
+        ));
+    }
+    if bundle.proof.creator != challenge.controller_did
+        && bundle.proof.creator != challenge.verification_method
+    {
+        return Err(SecurityError::code(
+            "controller_authorization_proof_creator_mismatch",
+        ));
+    }
+    verify_payload_with_proof(challenge, &bundle.proof, &verifying_key)
+        .map_err(|_| SecurityError::code("controller_authorization_proof_invalid"))?;
+    if let Some(value) = &bundle.proof.verification_method {
+        if value != &challenge.verification_method {
+            return Err(SecurityError::code(
+                "controller_authorization_verification_method_mismatch",
+            ));
+        }
+    }
+    Ok(method.id.clone())
+}
+
+pub fn reject_private_key_material(did_document: &DidDocument) -> Result<(), SecurityError> {
+    let value = serde_json::to_value(did_document)
+        .map_err(|_| SecurityError::code("controller_authorization_did_document_invalid"))?;
+    if contains_private_key_material(&value) {
+        return Err(SecurityError::code(
+            "controller_authorization_private_key_material",
+        ));
+    }
+    Ok(())
+}
+
+fn contains_private_key_material(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.iter().any(|(key, value)| {
+            matches!(
+                key.as_str(),
+                "privateKeyJwk"
+                    | "privateKeyMultibase"
+                    | "privateKeyBase58"
+                    | "privateKeyHex"
+                    | "d"
+            ) || contains_private_key_material(value)
+        }),
+        Value::Array(items) => items.iter().any(contains_private_key_material),
+        _ => false,
     }
 }
 
