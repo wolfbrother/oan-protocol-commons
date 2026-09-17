@@ -132,6 +132,7 @@ pub struct ControllerAuthorizationVerificationContext<'a> {
     pub expected_metadata_hash: &'a str,
     pub expected_registrar_did: &'a str,
     pub expected_purpose: &'a str,
+    pub max_clock_skew_seconds: i64,
     pub now: DateTime<Utc>,
 }
 
@@ -500,6 +501,21 @@ pub fn verify_controller_authorization_proof(
     if challenge.purpose != context.expected_purpose {
         return Err(SecurityError::code(
             "controller_authorization_purpose_mismatch",
+        ));
+    }
+    if challenge.nonce.trim().is_empty() {
+        return Err(SecurityError::code(
+            "controller_authorization_nonce_missing",
+        ));
+    }
+    if challenge.issued_at > challenge.expires_at {
+        return Err(SecurityError::code(
+            "controller_authorization_time_window_invalid",
+        ));
+    }
+    if challenge.issued_at > context.now + Duration::seconds(context.max_clock_skew_seconds) {
+        return Err(SecurityError::code(
+            "controller_authorization_challenge_not_yet_valid",
         ));
     }
     if context.now > challenge.expires_at {
