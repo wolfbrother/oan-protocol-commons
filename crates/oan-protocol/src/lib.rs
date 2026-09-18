@@ -17,6 +17,8 @@ pub const PROTOCOL_VERSION: &str = OAN_RESOURCE_PROTOCOL_VERSION;
 pub const PURPOSE_RESOURCE_REGISTRATION: &str = "resource-registration";
 pub const PURPOSE_CONTROLLER_AUTHORIZATION_REGISTRATION: &str =
     "resource-registration-controller-authorization";
+pub const PURPOSE_REGISTRATION_CREDENTIAL_QUERY: &str = "registration-credential-query";
+pub const PROTOCOL_REGISTRATION_CREDENTIAL_QUERY_V1: &str = "oan-registration-credential-query-v1";
 pub const PURPOSE_VERIFY_AND_PUBLISH: &str = "verify-and-publish";
 pub const PURPOSE_CDN_PUBLISH: &str = "cdn-publish";
 pub const PURPOSE_INFRASTRUCTURE_AUTHORIZATION_VC_ISSUE: &str =
@@ -167,6 +169,46 @@ pub struct ControllerAuthorizationProofBundle {
     #[serde(rename = "controllerDidDocument")]
     pub controller_did_document: DidDocument,
     pub proof: DataIntegrityProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegistrationCredentialQueryChallenge {
+    pub method: String,
+    pub path: String,
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "controllerDid")]
+    pub controller_did: String,
+    #[serde(rename = "verificationMethod")]
+    pub verification_method: String,
+    pub purpose: String,
+    #[serde(rename = "requestTimestamp")]
+    pub request_timestamp: DateTime<Utc>,
+    #[serde(rename = "requestNonce")]
+    pub request_nonce: String,
+    pub aud: String,
+    #[serde(rename = "protocolVersion")]
+    pub protocol_version: String,
+    #[serde(rename = "bodyHash", skip_serializing_if = "Option::is_none")]
+    pub body_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegistrationCredentialQueryRequest {
+    pub challenge: RegistrationCredentialQueryChallenge,
+    #[serde(rename = "controllerDidDocument")]
+    pub controller_did_document: DidDocument,
+    pub proof: DataIntegrityProof,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegistrationCredentialQueryResponse {
+    #[serde(rename = "resourceDid")]
+    pub resource_did: String,
+    #[serde(rename = "controllerDid")]
+    pub controller_did: String,
+    #[serde(rename = "registrationCredential")]
+    pub registration_credential: Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
