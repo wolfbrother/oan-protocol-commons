@@ -360,6 +360,24 @@ pub struct ResourceCdnIndexResponse {
     pub has_more: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaginationRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PaginationResponse<T> {
+    pub items: Vec<T>,
+    pub count: usize,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RootAuthorizeRequest {
     #[serde(rename = "targetDid")]

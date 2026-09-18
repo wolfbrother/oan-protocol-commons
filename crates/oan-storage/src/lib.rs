@@ -5,6 +5,7 @@
 
 //! Storage helpers for local OpenAgenet nodes.
 
+use futures_util::TryStreamExt;
 use serde::{de::DeserializeOwned, Serialize};
 use sqlx::{Executor, Pool, Postgres, QueryBuilder, Sqlite};
 use std::env;
@@ -26,6 +27,149 @@ pub enum StorageError {
     UnsupportedDatabaseUrl,
     #[error("database path is empty")]
     EmptyDatabasePath,
+    #[error("page limit {requested} exceeds maximum {maximum}")]
+    PageLimitExceeded { requested: u32, maximum: u32 },
+    #[error("record payload is {actual} bytes, maximum is {maximum}")]
+    RecordTooLarge { actual: usize, maximum: usize },
+    #[error("page payload is {actual} bytes, maximum is {maximum}")]
+    PageTooLarge { actual: usize, maximum: usize },
+    #[error("json directory contains {actual} entries, maximum scan size is {maximum}")]
+    PageScanTooLarge { actual: usize, maximum: usize },
+    #[error("invalid query limits: {reason}")]
+    InvalidQueryLimits { reason: &'static str },
+}
+
+pub const DEFAULT_PAGE_SIZE: u32 = 100;
+pub const MAX_PAGE_SIZE: u32 = 500;
+pub const DEFAULT_MAX_RECORD_BYTES: usize = 1024 * 1024;
+pub const DEFAULT_MAX_PAGE_BYTES: usize = 8 * 1024 * 1024;
+pub const DEFAULT_MAX_JSON_SCAN_ENTRIES: usize = 10_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueryLimits {
+    pub default_page_size: u32,
+    pub max_page_size: u32,
+    pub max_record_bytes: usize,
+    pub max_page_bytes: usize,
+    pub max_json_scan_entries: usize,
+}
+
+impl Default for QueryLimits {
+    fn default() -> Self {
+        Self {
+            default_page_size: DEFAULT_PAGE_SIZE,
+            max_page_size: MAX_PAGE_SIZE,
+            max_record_bytes: DEFAULT_MAX_RECORD_BYTES,
+            max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
+            max_json_scan_entries: DEFAULT_MAX_JSON_SCAN_ENTRIES,
+        }
+    }
+}
+
+impl QueryLimits {
+    fn validate(self) -> Result<(), StorageError> {
+        if self.default_page_size == 0 {
+            return Err(StorageError::InvalidQueryLimits {
+                reason: "default page size must be greater than zero",
+            });
+        }
+        if self.max_page_size == 0 {
+            return Err(StorageError::InvalidQueryLimits {
+                reason: "maximum page size must be greater than zero",
+            });
+        }
+        if self.default_page_size > self.max_page_size {
+            return Err(StorageError::InvalidQueryLimits {
+                reason: "default page size must not exceed maximum page size",
+            });
+        }
+        if self.max_record_bytes == 0 {
+            return Err(StorageError::InvalidQueryLimits {
+                reason: "maximum record bytes must be greater than zero",
+            });
+        }
+        if self.max_page_bytes == 0 {
+            return Err(StorageError::InvalidQueryLimits {
+                reason: "maximum page bytes must be greater than zero",
+            });
+        }
+        if self.max_json_scan_entries == 0 {
+            return Err(StorageError::InvalidQueryLimits {
+                reason: "maximum json scan entries must be greater than zero",
+            });
+        }
+        Ok(())
+    }
+
+    pub fn normalize_limit(self, requested: Option<u32>) -> Result<u32, StorageError> {
+        self.validate()?;
+        let limit = requested.unwrap_or(self.default_page_size);
+        if limit == 0 {
+            return Ok(self.default_page_size);
+        }
+        if limit > self.max_page_size {
+            return Err(StorageError::PageLimitExceeded {
+                requested: limit,
+                maximum: self.max_page_size,
+            });
+        }
+        Ok(limit)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamespacePageCursor {
+    pub updated_at: String,
+    pub record_key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamespacePage<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<NamespacePageCursor>,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsonFilePageCursor {
+    pub entry_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsonFilePage<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<JsonFilePageCursor>,
+    pub has_more: bool,
+}
+
+fn append_namespace_item<T: DeserializeOwned>(
+    items: &mut Vec<T>,
+    total_bytes: &mut usize,
+    next_cursor: &mut Option<NamespacePageCursor>,
+    row: (String, String, String),
+    limits: QueryLimits,
+) -> Result<(), StorageError> {
+    let (updated_at, record_key, value_json) = row;
+    let bytes = value_json.len();
+    if bytes > limits.max_record_bytes {
+        return Err(StorageError::RecordTooLarge {
+            actual: bytes,
+            maximum: limits.max_record_bytes,
+        });
+    }
+    *total_bytes = total_bytes.saturating_add(bytes);
+    if *total_bytes > limits.max_page_bytes {
+        return Err(StorageError::PageTooLarge {
+            actual: *total_bytes,
+            maximum: limits.max_page_bytes,
+        });
+    }
+    items.push(serde_json::from_str(&value_json)?);
+    *next_cursor = Some(NamespacePageCursor {
+        updated_at,
+        record_key,
+    });
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -481,6 +625,74 @@ impl SqliteJsonStore {
             .collect()
     }
 
+    pub async fn read_namespace_page<T: DeserializeOwned>(
+        &self,
+        namespace: &str,
+        cursor: Option<&NamespacePageCursor>,
+        requested_limit: Option<u32>,
+        limits: QueryLimits,
+    ) -> Result<NamespacePage<T>, StorageError> {
+        let limit = limits.normalize_limit(requested_limit)?;
+        let sql = if cursor.is_some() {
+            r#"
+            SELECT updated_at, record_key, value_json
+            FROM json_records
+            WHERE namespace = ?
+              AND (updated_at > ? OR (updated_at = ? AND record_key > ?))
+            ORDER BY updated_at, record_key
+            LIMIT ?
+            "#
+        } else {
+            r#"
+            SELECT updated_at, record_key, value_json
+            FROM json_records
+            WHERE namespace = ?
+            ORDER BY updated_at, record_key
+            LIMIT ?
+            "#
+        };
+        let mut query = sqlx::query_as::<_, (String, String, String)>(sql).bind(namespace);
+        if let Some(cursor) = cursor {
+            query = query
+                .bind(&cursor.updated_at)
+                .bind(&cursor.updated_at)
+                .bind(&cursor.record_key);
+        }
+        let mut stream = query.bind(i64::from(limit)).fetch(&self.pool);
+        let mut items = Vec::with_capacity(limit as usize);
+        let mut total_bytes = 0usize;
+        let mut next_cursor = None;
+        while let Some(row) = stream.try_next().await? {
+            append_namespace_item(&mut items, &mut total_bytes, &mut next_cursor, row, limits)?;
+        }
+        let has_more = if let Some(cursor) = next_cursor.as_ref() {
+            let exists = sqlx::query_scalar::<_, i64>(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM json_records
+                    WHERE namespace = ?
+                      AND (updated_at > ? OR (updated_at = ? AND record_key > ?))
+                )
+                "#,
+            )
+            .bind(namespace)
+            .bind(&cursor.updated_at)
+            .bind(&cursor.updated_at)
+            .bind(&cursor.record_key)
+            .fetch_one(&self.pool)
+            .await?;
+            exists != 0
+        } else {
+            false
+        };
+        Ok(NamespacePage {
+            items,
+            next_cursor: if has_more { next_cursor } else { None },
+            has_more,
+        })
+    }
+
     pub async fn read_json<T: DeserializeOwned>(
         &self,
         namespace: &str,
@@ -898,6 +1110,76 @@ impl PostgresJsonStore {
             .collect()
     }
 
+    pub async fn read_namespace_page<T: DeserializeOwned>(
+        &self,
+        namespace: &str,
+        cursor: Option<&NamespacePageCursor>,
+        requested_limit: Option<u32>,
+        limits: QueryLimits,
+    ) -> Result<NamespacePage<T>, StorageError> {
+        let limit = limits.normalize_limit(requested_limit)?;
+        let sql = if cursor.is_some() {
+            r#"
+            SELECT updated_at::text, record_key, value_json
+            FROM json_records
+            WHERE namespace = $1
+              AND (updated_at > $2::timestamptz
+                   OR (updated_at = $2::timestamptz AND record_key > $3))
+            ORDER BY updated_at, record_key
+            LIMIT $4
+            "#
+        } else {
+            r#"
+            SELECT updated_at::text, record_key, value_json
+            FROM json_records
+            WHERE namespace = $1
+            ORDER BY updated_at, record_key
+            LIMIT $2
+            "#
+        };
+        let mut query = sqlx::query_as::<_, (String, String, String)>(sql).bind(namespace);
+        if let Some(cursor) = cursor {
+            query = query
+                .bind(&cursor.updated_at)
+                .bind(&cursor.updated_at)
+                .bind(&cursor.record_key);
+        }
+        let mut stream = query.bind(i64::from(limit)).fetch(&self.pool);
+        let mut items = Vec::with_capacity(limit as usize);
+        let mut total_bytes = 0usize;
+        let mut next_cursor = None;
+        while let Some(row) = stream.try_next().await? {
+            append_namespace_item(&mut items, &mut total_bytes, &mut next_cursor, row, limits)?;
+        }
+        let has_more = if let Some(cursor) = next_cursor.as_ref() {
+            let exists = sqlx::query_scalar::<_, bool>(
+                r#"
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM json_records
+                    WHERE namespace = $1
+                      AND (updated_at > $2::timestamptz
+                           OR (updated_at = $2::timestamptz AND record_key > $3))
+                )
+                "#,
+            )
+            .bind(namespace)
+            .bind(&cursor.updated_at)
+            .bind(&cursor.updated_at)
+            .bind(&cursor.record_key)
+            .fetch_one(&self.pool)
+            .await?;
+            exists
+        } else {
+            false
+        };
+        Ok(NamespacePage {
+            items,
+            next_cursor: if has_more { next_cursor } else { None },
+            has_more,
+        })
+    }
+
     pub async fn read_json<T: DeserializeOwned>(
         &self,
         namespace: &str,
@@ -1058,6 +1340,80 @@ impl JsonStore {
 
     pub fn exists(&self, path: impl AsRef<Path>) -> bool {
         self.resolve(path).exists()
+    }
+
+    pub fn read_directory_page<T: DeserializeOwned>(
+        &self,
+        directory: impl AsRef<Path>,
+        cursor: Option<&JsonFilePageCursor>,
+        requested_limit: Option<u32>,
+        limits: QueryLimits,
+    ) -> Result<JsonFilePage<T>, StorageError> {
+        let limit = limits.normalize_limit(requested_limit)?;
+        let directory = self.resolve(directory);
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(directory)?.flatten() {
+            if !entry.file_type()?.is_file()
+                || entry.path().extension().and_then(|value| value.to_str()) != Some("json")
+            {
+                continue;
+            }
+            entries.push(entry);
+            if entries.len() > limits.max_json_scan_entries {
+                return Err(StorageError::PageScanTooLarge {
+                    actual: entries.len(),
+                    maximum: limits.max_json_scan_entries,
+                });
+            }
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+
+        let cursor_name = cursor.map(|value| value.entry_name.as_str());
+        let mut items = Vec::with_capacity(limit as usize);
+        let mut total_bytes = 0usize;
+        let mut next_cursor = None;
+        let mut has_more = false;
+
+        for (index, entry) in entries
+            .into_iter()
+            .filter(|entry| match cursor_name {
+                Some(cursor_name) => entry.file_name().to_string_lossy().as_ref() > cursor_name,
+                None => true,
+            })
+            .enumerate()
+        {
+            if index >= limit as usize {
+                has_more = true;
+                break;
+            }
+            let entry_name = entry.file_name().to_string_lossy().into_owned();
+            let bytes = fs::read(entry.path())?;
+            if bytes.len() > limits.max_record_bytes {
+                return Err(StorageError::RecordTooLarge {
+                    actual: bytes.len(),
+                    maximum: limits.max_record_bytes,
+                });
+            }
+            total_bytes = total_bytes.saturating_add(bytes.len());
+            if total_bytes > limits.max_page_bytes {
+                return Err(StorageError::PageTooLarge {
+                    actual: total_bytes,
+                    maximum: limits.max_page_bytes,
+                });
+            }
+            items.push(serde_json::from_slice(&bytes)?);
+            next_cursor = Some(JsonFilePageCursor { entry_name });
+        }
+
+        if !has_more {
+            next_cursor = None;
+        }
+
+        Ok(JsonFilePage {
+            items,
+            next_cursor,
+            has_more,
+        })
     }
 }
 
