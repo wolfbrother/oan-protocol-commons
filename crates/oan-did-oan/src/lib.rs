@@ -3,7 +3,7 @@
 // Initial author: JINLIANG XU
 // Email: jlxufly@gmail.com
 
-//! did:oan parsing, generation, and validation.
+//! `did:oan` profile-v2 parsing, generation, and validation.
 
 use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
@@ -15,69 +15,16 @@ use std::sync::OnceLock;
 use thiserror::Error;
 
 pub const DID_PREFIX: &str = "did:oan:";
-pub const SUFFIX_LEN: usize = 32;
+pub const REGISTRAR_CODE_LEN: usize = 5;
+pub const RESOURCE_SUFFIX_LEN: usize = 32;
+pub const DID_LEN: usize = 46;
 pub const BASE58_ALPHABET: &str = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 fn did_regex() -> &'static Regex {
     static DID_RE: OnceLock<Regex> = OnceLock::new();
-    DID_RE.get_or_init(|| Regex::new(r"^did:oan:[A-Z0-9]{4}:[1-9A-HJ-NP-Za-km-z]{32}$").unwrap())
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OanSubjectCode {
-    AgentService,
-    Skill,
-    McpServer,
-    ToolApi,
-    InfrastructureNode,
-    Organization,
-    Developer,
-    ReservedResource,
-    Other,
-}
-
-impl OanSubjectCode {
-    pub fn parse(value: &str) -> Self {
-        match value {
-            "AG" => Self::AgentService,
-            "SK" => Self::Skill,
-            "MC" => Self::McpServer,
-            "TL" => Self::ToolApi,
-            "IN" => Self::InfrastructureNode,
-            "OR" => Self::Organization,
-            "DV" => Self::Developer,
-            "RS" => Self::ReservedResource,
-            _ => Self::Other,
-        }
-    }
-
-    pub fn as_code(self) -> Option<&'static str> {
-        match self {
-            Self::AgentService => Some("AG"),
-            Self::Skill => Some("SK"),
-            Self::McpServer => Some("MC"),
-            Self::ToolApi => Some("TL"),
-            Self::InfrastructureNode => Some("IN"),
-            Self::Organization => Some("OR"),
-            Self::Developer => Some("DV"),
-            Self::ReservedResource => Some("RS"),
-            Self::Other => None,
-        }
-    }
-
-    pub fn expected_resource_type(self) -> Option<&'static str> {
-        match self {
-            Self::AgentService => Some("agent_service"),
-            Self::Skill => Some("skill"),
-            Self::McpServer => Some("mcp_server"),
-            Self::ToolApi => Some("tool_api"),
-            Self::InfrastructureNode => Some("infrastructure_node"),
-            Self::Organization => Some("organization"),
-            Self::Developer => Some("developer"),
-            _ => None,
-        }
-    }
+    DID_RE.get_or_init(|| {
+        Regex::new(r"^did:oan:[1-9A-HJ-NP-Za-km-z]{5}:[1-9A-HJ-NP-Za-km-z]{32}$").unwrap()
+    })
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -86,25 +33,19 @@ pub enum DidOanError {
     InvalidPrefix,
     #[error("did must have 4 colon-separated parts")]
     InvalidPartCount,
-    #[error("semantic code must be 4 uppercase alphanumeric characters")]
-    InvalidSemanticCode,
-    #[error("suffix must be exactly 32 Base58 characters")]
-    InvalidSuffix,
-    #[error("invalid did:oan syntax")]
+    #[error("registrar code must be exactly 5 case-sensitive Base58 characters")]
+    InvalidRegistrarCode,
+    #[error("resource suffix must be exactly 32 Base58 characters")]
+    InvalidResourceSuffix,
+    #[error("invalid did:oan profile-v2 syntax")]
     InvalidSyntax,
-    #[error("resource type does not match did subject code")]
-    ResourceTypeMismatch,
-    #[error("unsupported subject code")]
-    UnsupportedSubjectCode,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DidOan {
     value: String,
-    semantic_code: String,
-    subject_code: String,
-    app_domain_code: String,
-    suffix: String,
+    registrar_code: String,
+    resource_suffix: String,
 }
 
 impl DidOan {
@@ -113,90 +54,60 @@ impl DidOan {
         if !value.starts_with(DID_PREFIX) {
             return Err(DidOanError::InvalidPrefix);
         }
-
         let parts: Vec<&str> = value.split(':').collect();
         if parts.len() != 4 {
             return Err(DidOanError::InvalidPartCount);
         }
-
-        let semantic_code = parts[2];
-        validate_semantic_code(semantic_code)?;
-
-        let suffix = parts[3];
-        validate_suffix(suffix)?;
-
+        let registrar_code = parts[2];
+        validate_registrar_code(registrar_code)?;
+        let resource_suffix = parts[3];
+        validate_resource_suffix(resource_suffix)?;
         if !did_regex().is_match(value) {
             return Err(DidOanError::InvalidSyntax);
         }
-
         Ok(Self {
             value: value.to_owned(),
-            semantic_code: semantic_code.to_owned(),
-            subject_code: semantic_code[..2].to_owned(),
-            app_domain_code: semantic_code[2..].to_owned(),
-            suffix: suffix.to_owned(),
+            registrar_code: registrar_code.to_owned(),
+            resource_suffix: resource_suffix.to_owned(),
         })
     }
 
-    pub fn generate(semantic_code: &str) -> Result<Self, DidOanError> {
-        validate_semantic_code(semantic_code)?;
-        let suffix = random_base58_suffix();
-        Self::parse(format!("{DID_PREFIX}{semantic_code}:{suffix}"))
+    pub fn generate(registrar_code: &str) -> Result<Self, DidOanError> {
+        validate_registrar_code(registrar_code)?;
+        Self::parse(format!(
+            "{DID_PREFIX}{registrar_code}:{}",
+            random_base58_suffix()
+        ))
     }
 
     pub fn derive(
-        semantic_code: &str,
+        registrar_code: &str,
         controller_material: &[u8],
         nonce: &[u8],
     ) -> Result<Self, DidOanError> {
-        validate_semantic_code(semantic_code)?;
+        validate_registrar_code(registrar_code)?;
         let mut hasher = Sha256::new();
-        hasher.update(b"OAN-DID-SUFFIX-v1");
-        hasher.update(semantic_code.as_bytes());
+        hasher.update(b"OAN-DID-SUFFIX-v2");
+        hasher.update(registrar_code.as_bytes());
         hasher.update(controller_material);
         hasher.update(nonce);
-        let suffix = derived_base58_suffix(hasher);
-        Self::parse(format!("{DID_PREFIX}{semantic_code}:{suffix}"))
-    }
-
-    pub fn validate_resource_type(&self, resource_type: &str) -> Result<(), DidOanError> {
-        let Some(expected) = self.subject().expected_resource_type() else {
-            return Err(DidOanError::UnsupportedSubjectCode);
-        };
-        if expected == resource_type {
-            Ok(())
-        } else {
-            Err(DidOanError::ResourceTypeMismatch)
-        }
+        Self::parse(format!(
+            "{DID_PREFIX}{registrar_code}:{}",
+            derived_base58_suffix(hasher)
+        ))
     }
 
     pub fn as_str(&self) -> &str {
         &self.value
     }
-
-    pub fn semantic_code(&self) -> &str {
-        &self.semantic_code
+    pub fn registrar_code(&self) -> &str {
+        &self.registrar_code
     }
-
-    pub fn subject_code(&self) -> &str {
-        &self.subject_code
+    pub fn resource_suffix(&self) -> &str {
+        &self.resource_suffix
     }
-
-    pub fn app_domain_code(&self) -> &str {
-        &self.app_domain_code
-    }
-
-    pub fn suffix(&self) -> &str {
-        &self.suffix
-    }
-
-    pub fn subject(&self) -> OanSubjectCode {
-        OanSubjectCode::parse(&self.subject_code)
-    }
-
     pub fn key_id(&self, fragment: &str) -> String {
-        let fragment = fragment.trim_start_matches('#');
-        format!("{}#{fragment}", self.value)
+        format!("{}#{}", self.value, fragment.trim_start_matches('#'))
     }
 }
 
@@ -208,7 +119,6 @@ impl Display for DidOan {
 
 impl FromStr for DidOan {
     type Err = DidOanError;
-
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Self::parse(value)
     }
@@ -218,48 +128,43 @@ pub fn validate(value: &str) -> Result<(), DidOanError> {
     DidOan::parse(value).map(|_| ())
 }
 
-pub fn validate_semantic_code(value: &str) -> Result<(), DidOanError> {
-    if value.len() == 4
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
-    {
+pub fn validate_registrar_code(value: &str) -> Result<(), DidOanError> {
+    if value.len() == REGISTRAR_CODE_LEN && value.chars().all(|ch| BASE58_ALPHABET.contains(ch)) {
         Ok(())
     } else {
-        Err(DidOanError::InvalidSemanticCode)
+        Err(DidOanError::InvalidRegistrarCode)
     }
 }
 
-pub fn validate_suffix(value: &str) -> Result<(), DidOanError> {
-    if value.len() == SUFFIX_LEN && value.chars().all(|ch| BASE58_ALPHABET.contains(ch)) {
+pub fn validate_resource_suffix(value: &str) -> Result<(), DidOanError> {
+    if value.len() == RESOURCE_SUFFIX_LEN && value.chars().all(|ch| BASE58_ALPHABET.contains(ch)) {
         Ok(())
     } else {
-        Err(DidOanError::InvalidSuffix)
+        Err(DidOanError::InvalidResourceSuffix)
     }
 }
 
 fn random_base58_suffix() -> String {
-    let mut suffix = String::with_capacity(SUFFIX_LEN);
+    let mut suffix = String::with_capacity(RESOURCE_SUFFIX_LEN);
     let mut bytes = [0u8; 64];
-    while suffix.len() < SUFFIX_LEN {
+    while suffix.len() < RESOURCE_SUFFIX_LEN {
         OsRng.fill_bytes(&mut bytes);
         push_unbiased_base58_chars(&mut suffix, &bytes);
     }
-    suffix.truncate(SUFFIX_LEN);
+    suffix.truncate(RESOURCE_SUFFIX_LEN);
     suffix
 }
 
 fn derived_base58_suffix(seed_hasher: Sha256) -> String {
-    let mut suffix = String::with_capacity(SUFFIX_LEN);
+    let mut suffix = String::with_capacity(RESOURCE_SUFFIX_LEN);
     let mut counter = 0u64;
-    while suffix.len() < SUFFIX_LEN {
+    while suffix.len() < RESOURCE_SUFFIX_LEN {
         let mut hasher = seed_hasher.clone();
         hasher.update(counter.to_be_bytes());
-        let digest = hasher.finalize();
-        push_unbiased_base58_chars(&mut suffix, digest.as_slice());
+        push_unbiased_base58_chars(&mut suffix, hasher.finalize().as_slice());
         counter += 1;
     }
-    suffix.truncate(SUFFIX_LEN);
+    suffix.truncate(RESOURCE_SUFFIX_LEN);
     suffix
 }
 
@@ -269,7 +174,7 @@ fn push_unbiased_base58_chars(output: &mut String, bytes: &[u8]) {
     for byte in bytes {
         if *byte < rejection_zone {
             output.push(alphabet[(*byte as usize) % alphabet.len()] as char);
-            if output.len() == SUFFIX_LEN {
+            if output.len() == RESOURCE_SUFFIX_LEN {
                 break;
             }
         }

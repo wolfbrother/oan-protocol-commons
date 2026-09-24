@@ -36,6 +36,14 @@ impl CryptoSuite {
         }
     }
 
+    /// Canonical profile-v2 spelling used in serialized proofs.
+    pub fn canonical_hash_algorithm(&self) -> &'static str {
+        match self {
+            Self::Ed25519Sha256Legacy | Self::Ed25519Sha256 => "sha256",
+            Self::Sm2Sm3 => "sm3",
+        }
+    }
+
     pub fn verification_method_type(&self) -> &'static str {
         match self {
             Self::Ed25519Sha256Legacy | Self::Ed25519Sha256 => "Ed25519VerificationKey2020",
@@ -68,8 +76,18 @@ impl CryptoSuite {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 pub enum SubjectType {
+    AgentInstance,
+    AgentProduct,
+    RootNode,
+    RegistrarNode,
+    DiscoveryNode,
+    CdnNode,
+    VcIssuerNode,
+    TrustIndexerNode,
+    Unspecified,
+    #[serde(skip)]
     Agent,
     AgentService,
     Skill,
@@ -83,6 +101,8 @@ pub enum SubjectType {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceType {
+    AgentInstance,
+    AgentProduct,
     AgentService,
     Skill,
     McpServer,
@@ -90,11 +110,20 @@ pub enum ResourceType {
     InfrastructureNode,
     Organization,
     Developer,
+    RootNode,
+    RegistrarNode,
+    DiscoveryNode,
+    CdnNode,
+    VcIssuerNode,
+    TrustIndexerNode,
+    Unspecified,
 }
 
 impl ResourceType {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::AgentInstance => "agent_instance",
+            Self::AgentProduct => "agent_product",
             Self::AgentService => "agent_service",
             Self::Skill => "skill",
             Self::McpServer => "mcp_server",
@@ -102,31 +131,13 @@ impl ResourceType {
             Self::InfrastructureNode => "infrastructure_node",
             Self::Organization => "organization",
             Self::Developer => "developer",
-        }
-    }
-
-    pub fn expected_subject_code(&self) -> &'static str {
-        match self {
-            Self::AgentService => "AG",
-            Self::Skill => "SK",
-            Self::McpServer => "MC",
-            Self::ToolApi => "TL",
-            Self::InfrastructureNode => "IN",
-            Self::Organization => "OR",
-            Self::Developer => "DV",
-        }
-    }
-
-    pub fn from_subject_code(value: &str) -> Option<Self> {
-        match value {
-            "AG" => Some(Self::AgentService),
-            "SK" => Some(Self::Skill),
-            "MC" => Some(Self::McpServer),
-            "TL" => Some(Self::ToolApi),
-            "IN" => Some(Self::InfrastructureNode),
-            "OR" => Some(Self::Organization),
-            "DV" => Some(Self::Developer),
-            _ => None,
+            Self::RootNode => "root_node",
+            Self::RegistrarNode => "registrar_node",
+            Self::DiscoveryNode => "discovery_node",
+            Self::CdnNode => "cdn_node",
+            Self::VcIssuerNode => "vc_issuer_node",
+            Self::TrustIndexerNode => "trust_indexer_node",
+            Self::Unspecified => "unspecified",
         }
     }
 }
@@ -357,11 +368,15 @@ pub struct PackageInfo {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OanMetadata {
     #[serde(rename = "subjectType")]
-    pub subject_type: ResourceType,
+    pub subject_type: SubjectType,
     #[serde(rename = "resourceType")]
     pub resource_type: ResourceType,
-    #[serde(rename = "nodeRole", skip_serializing_if = "Option::is_none")]
-    pub node_role: Option<String>,
+    #[serde(
+        rename = "externalIdentifiers",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub external_identifiers: Vec<ExternalIdentifier>,
     #[serde(rename = "identityType", skip_serializing_if = "Option::is_none")]
     pub identity_type: Option<String>,
     #[serde(rename = "controllerDid", skip_serializing_if = "Option::is_none")]
@@ -406,6 +421,8 @@ pub struct DidDocument {
     #[serde(rename = "@context")]
     pub context: Vec<String>,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<DidController>,
     #[serde(rename = "verificationMethod", default)]
     pub verification_method: Vec<VerificationMethod>,
     #[serde(default)]
@@ -420,8 +437,36 @@ pub struct DidDocument {
     pub capability_invocation: Vec<String>,
     #[serde(default)]
     pub service: Vec<ServiceEndpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proof: Option<DataIntegrityProof>,
     #[serde(rename = "oanMetadata", skip_serializing_if = "Option::is_none")]
     pub oan_metadata: Option<OanMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalIdentifier {
+    pub id: String,
+    #[serde(
+        rename = "resolutionServiceEndpoint",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resolution_service_endpoint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DidController {
+    Did(String),
+    Dids(Vec<String>),
+}
+
+impl DidController {
+    pub fn contains(&self, did: &str) -> bool {
+        match self {
+            Self::Did(value) => value == did,
+            Self::Dids(values) => values.iter().any(|value| value == did),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -743,6 +788,18 @@ pub enum DidDocumentError {
     ResourceTypeMismatch,
     #[error("did subject code and oan resource type do not match")]
     SubjectCodeResourceTypeMismatch,
+    #[error("did document controller is required")]
+    MissingController,
+    #[error("did document top-level proof is required")]
+    MissingProof,
+    #[error("did document proof is invalid: {0}")]
+    InvalidProof(&'static str),
+    #[error("external identifier list is invalid: {0}")]
+    InvalidExternalIdentifier(&'static str),
+    #[error("subject type and resource type combination is invalid")]
+    InvalidTypeCombination,
+    #[error("oan metadata controllerDid must match the top-level controller")]
+    ControllerDidMismatch,
 }
 
 impl DidDocument {
@@ -771,33 +828,162 @@ impl DidDocument {
 
     pub fn validate_oan_resource(&self) -> Result<(), DidDocumentError> {
         self.validate_mvp()?;
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(DidDocumentError::MissingController)?;
         let metadata = self
             .oan_metadata
             .as_ref()
             .ok_or(DidDocumentError::MissingOanMetadata)?;
-        if metadata.subject_type != metadata.resource_type {
-            return Err(DidDocumentError::ResourceTypeMismatch);
+        if let Some(controller_did) = metadata.controller_did.as_deref() {
+            if !controller.contains(controller_did) {
+                return Err(DidDocumentError::ControllerDidMismatch);
+            }
         }
-        let parts = self.id.split(':').collect::<Vec<_>>();
-        if parts.len() != 4
-            || parts[0] != "did"
-            || parts[1] != "oan"
-            || parts[2].len() != 4
-            || !parts[2]
-                .chars()
-                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
-            || parts[3].len() != 32
-            || !parts[3]
-                .chars()
-                .all(|ch| "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".contains(ch))
-        {
-            return Err(DidDocumentError::SubjectCodeResourceTypeMismatch);
+        if !valid_type_combination(&metadata.subject_type, &metadata.resource_type) {
+            return Err(DidDocumentError::InvalidTypeCombination);
         }
-        let subject_code = &parts[2][..2];
-        if subject_code != metadata.resource_type.expected_subject_code() {
-            return Err(DidDocumentError::SubjectCodeResourceTypeMismatch);
-        }
+        let did = oan_did_oan::DidOan::parse(&self.id)
+            .map_err(|_| DidDocumentError::SubjectCodeResourceTypeMismatch)?;
+        let _ = did;
+        let proof = self.proof.as_ref().ok_or(DidDocumentError::MissingProof)?;
+        validate_proof(self, controller, proof)?;
+        validate_external_identifiers(&metadata.external_identifiers)?;
         Ok(())
     }
+}
+
+fn valid_type_combination(subject: &SubjectType, resource: &ResourceType) -> bool {
+    matches!(
+        (subject, resource),
+        (SubjectType::AgentInstance, ResourceType::AgentInstance)
+            | (SubjectType::AgentInstance, ResourceType::AgentService)
+            | (SubjectType::AgentProduct, ResourceType::AgentProduct)
+            | (SubjectType::Organization, ResourceType::Organization)
+            | (SubjectType::Developer, ResourceType::Developer)
+            | (SubjectType::AgentService, ResourceType::AgentService)
+            | (SubjectType::Skill, ResourceType::Skill)
+            | (SubjectType::McpServer, ResourceType::McpServer)
+            | (SubjectType::ToolApi, ResourceType::ToolApi)
+            | (
+                SubjectType::InfrastructureNode,
+                ResourceType::InfrastructureNode
+            )
+            | (SubjectType::InfrastructureNode, ResourceType::RootNode)
+            | (SubjectType::InfrastructureNode, ResourceType::RegistrarNode)
+            | (SubjectType::InfrastructureNode, ResourceType::DiscoveryNode)
+            | (SubjectType::InfrastructureNode, ResourceType::CdnNode)
+            | (SubjectType::InfrastructureNode, ResourceType::VcIssuerNode)
+            | (
+                SubjectType::InfrastructureNode,
+                ResourceType::TrustIndexerNode
+            )
+            | (SubjectType::RootNode, ResourceType::RootNode)
+            | (SubjectType::RegistrarNode, ResourceType::RegistrarNode)
+            | (SubjectType::DiscoveryNode, ResourceType::DiscoveryNode)
+            | (SubjectType::CdnNode, ResourceType::CdnNode)
+            | (SubjectType::VcIssuerNode, ResourceType::VcIssuerNode)
+            | (
+                SubjectType::TrustIndexerNode,
+                ResourceType::TrustIndexerNode
+            )
+            | (SubjectType::Unspecified, ResourceType::Unspecified)
+    )
+}
+
+fn validate_proof(
+    document: &DidDocument,
+    controller: &DidController,
+    proof: &DataIntegrityProof,
+) -> Result<(), DidDocumentError> {
+    if proof.proof_purpose != "assertionMethod" {
+        return Err(DidDocumentError::InvalidProof("proofPurpose"));
+    }
+    let verification_method = proof
+        .verification_method
+        .as_deref()
+        .ok_or(DidDocumentError::InvalidProof("verificationMethod"))?;
+    if proof.creator != verification_method {
+        return Err(DidDocumentError::InvalidProof("creator"));
+    }
+    if !document
+        .assertion_method
+        .iter()
+        .any(|method| method == verification_method)
+    {
+        return Err(DidDocumentError::InvalidProof("assertionMethod"));
+    }
+    let method = document
+        .verification_method
+        .iter()
+        .find(|method| method.id == verification_method)
+        .ok_or(DidDocumentError::InvalidProof(
+            "verificationMethodReference",
+        ))?;
+    if !controller.contains(&method.controller) {
+        return Err(DidDocumentError::InvalidProof("controller"));
+    }
+    if proof.crypto_suite.is_none() {
+        return Err(DidDocumentError::InvalidProof("cryptoSuite"));
+    }
+    if proof.hash_algorithm.is_none() {
+        return Err(DidDocumentError::InvalidProof("hashAlgorithm"));
+    }
+    let suite = proof.crypto_suite.as_ref().expect("checked above");
+    if matches!(suite, CryptoSuite::Ed25519Sha256Legacy) {
+        return Err(DidDocumentError::InvalidProof("legacyCryptoSuite"));
+    }
+    let hash_algorithm = suite.canonical_hash_algorithm();
+    if proof.proof_type != suite.proof_type()
+        || proof.hash_algorithm.as_deref() != Some(hash_algorithm)
+        || method.crypto_suite.as_ref() != Some(suite)
+        || method.method_type != suite.verification_method_type()
+    {
+        return Err(DidDocumentError::InvalidProof("algorithmMismatch"));
+    }
+    Ok(())
+}
+
+fn validate_external_identifiers(values: &[ExternalIdentifier]) -> Result<(), DidDocumentError> {
+    if values.len() > 8 {
+        return Err(DidDocumentError::InvalidExternalIdentifier("maxItems"));
+    }
+    let mut ids = BTreeSet::new();
+    for value in values {
+        if value.id.is_empty()
+            || value.id.len() > 512
+            || value.id.chars().any(|ch| ch.is_control())
+            || value.id.starts_with("did:oan:")
+        {
+            return Err(DidDocumentError::InvalidExternalIdentifier("id"));
+        }
+        if !ids.insert(&value.id) {
+            return Err(DidDocumentError::InvalidExternalIdentifier("duplicate"));
+        }
+        if let Some(endpoint) = &value.resolution_service_endpoint {
+            if endpoint.len() > 1024 {
+                return Err(DidDocumentError::InvalidExternalIdentifier(
+                    "endpointLength",
+                ));
+            }
+            let parsed = url::Url::parse(endpoint)
+                .map_err(|_| DidDocumentError::InvalidExternalIdentifier("endpointUri"))?;
+            if matches!(parsed.scheme(), "file" | "data" | "javascript")
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+            {
+                return Err(DidDocumentError::InvalidExternalIdentifier(
+                    "endpointSafety",
+                ));
+            }
+        }
+    }
+    let serialized = serde_json::to_vec(values)
+        .map_err(|_| DidDocumentError::InvalidExternalIdentifier("serialization"))?;
+    if serialized.len() > 8192 {
+        return Err(DidDocumentError::InvalidExternalIdentifier("maxBytes"));
+    }
+    Ok(())
 }
 

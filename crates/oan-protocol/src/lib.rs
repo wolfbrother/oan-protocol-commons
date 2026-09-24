@@ -248,14 +248,22 @@ pub struct ResourceRegistrationSubmission {
 impl ResourceRegistrationSubmission {
     pub fn validate_shape(&self) -> Result<(), String> {
         let did = DidOan::parse(&self.resource_did).map_err(|err| err.to_string())?;
-        did.validate_resource_type(self.resource_type.as_str())
-            .map_err(|err| err.to_string())?;
+        let _ = did;
         if self.did_document.id != self.resource_did {
             return Err("did_document_id_mismatch".to_owned());
         }
         self.did_document
             .validate_oan_resource()
             .map_err(|err| err.to_string())?;
+        if self
+            .did_document
+            .oan_metadata
+            .as_ref()
+            .map(|metadata| metadata.resource_type != self.resource_type)
+            .unwrap_or(true)
+        {
+            return Err("resource_type_mismatch".to_owned());
+        }
         if self.package_version.trim().is_empty() {
             return Err("empty_package_version".to_owned());
         }

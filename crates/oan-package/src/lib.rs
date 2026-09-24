@@ -6,7 +6,9 @@
 //! Verified package, manifest, and metadata models.
 
 use chrono::{DateTime, Utc};
-use oan_core::{CryptoSuite, DataIntegrityProof, DidDocument, ResourceType, ServiceEndpoint};
+use oan_core::{
+    CryptoSuite, DataIntegrityProof, DidDocument, ResourceType, ServiceEndpoint, SubjectType,
+};
 use oan_crypto::{hash_json_with_suite, CryptoError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -34,7 +36,7 @@ pub struct ResourceMetadata {
     #[serde(rename = "resourceType")]
     pub resource_type: ResourceType,
     #[serde(rename = "subjectType")]
-    pub subject_type: ResourceType,
+    pub subject_type: SubjectType,
     #[serde(rename = "publisherDid", skip_serializing_if = "Option::is_none")]
     pub publisher_did: Option<String>,
     #[serde(rename = "subjectDid", skip_serializing_if = "Option::is_none")]
@@ -183,7 +185,7 @@ impl ResourcePackage {
 
     pub fn verify_resource_type_consistency(&self) -> Result<(), PackageError> {
         if self.resource_type == self.metadata.resource_type
-            && self.resource_type == self.metadata.subject_type
+            && resource_type_matches_subject(&self.resource_type, &self.metadata.subject_type)
         {
             Ok(())
         } else {
@@ -233,6 +235,35 @@ impl ResourcePackage {
             Err(PackageError::RootProofClaimMismatch)
         }
     }
+}
+
+fn resource_type_matches_subject(resource_type: &ResourceType, subject_type: &SubjectType) -> bool {
+    matches!(
+        (resource_type, subject_type),
+        (ResourceType::AgentInstance, SubjectType::AgentInstance)
+            | (ResourceType::AgentProduct, SubjectType::AgentProduct)
+            | (ResourceType::AgentService, SubjectType::AgentService)
+            | (ResourceType::AgentService, SubjectType::AgentInstance)
+            | (ResourceType::Skill, SubjectType::Skill)
+            | (ResourceType::McpServer, SubjectType::McpServer)
+            | (ResourceType::ToolApi, SubjectType::ToolApi)
+            | (ResourceType::Organization, SubjectType::Organization)
+            | (ResourceType::Developer, SubjectType::Developer)
+            | (
+                ResourceType::InfrastructureNode,
+                SubjectType::InfrastructureNode
+            )
+            | (ResourceType::RootNode, SubjectType::RootNode)
+            | (ResourceType::RegistrarNode, SubjectType::RegistrarNode)
+            | (ResourceType::DiscoveryNode, SubjectType::DiscoveryNode)
+            | (ResourceType::CdnNode, SubjectType::CdnNode)
+            | (ResourceType::VcIssuerNode, SubjectType::VcIssuerNode)
+            | (
+                ResourceType::TrustIndexerNode,
+                SubjectType::TrustIndexerNode
+            )
+            | (ResourceType::Unspecified, SubjectType::Unspecified)
+    )
 }
 
 pub fn hash_resource_metadata_with_suite(

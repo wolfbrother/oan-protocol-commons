@@ -10,7 +10,7 @@ use ed25519_dalek::{
     Signature as Ed25519Signature, Signer as _, SigningKey as Ed25519SigningKey, Verifier as _,
     VerifyingKey as Ed25519VerifyingKey,
 };
-use oan_core::{CryptoSuite, DataIntegrityProof, VerificationMethod};
+use oan_core::{CryptoSuite, DataIntegrityProof, DidDocument, VerificationMethod};
 use rand::{rngs::OsRng, RngCore};
 use serde::Serialize;
 use sha2::{Digest as ShaDigest, Sha256};
@@ -363,6 +363,22 @@ pub fn signature_input<T: Serialize>(
     }
 }
 
+pub fn did_document_signature_input(
+    document: &DidDocument,
+    suite: CryptoSuite,
+) -> Result<Vec<u8>, CryptoError> {
+    let mut document_without_proof = document.clone();
+    document_without_proof.proof = None;
+    signature_input(suite, &document_without_proof)
+}
+
+pub fn hash_did_document_with_proof(
+    document: &DidDocument,
+    suite: CryptoSuite,
+) -> Result<String, CryptoError> {
+    hash_json_with_suite(suite, document)
+}
+
 pub fn public_key_multibase(verifying_key: &VerifyingKey) -> String {
     let bytes = match verifying_key {
         VerifyingKey::Ed25519 { key, .. } => key.as_bytes().to_vec(),
@@ -445,7 +461,7 @@ pub fn build_data_integrity_proof<T: Serialize>(
         proof_purpose: "assertionMethod".to_owned(),
         proof_value: sign_bytes(signing_key, &input)?,
         crypto_suite: Some(suite.clone()),
-        hash_algorithm: Some(suite.hash_algorithm().to_owned()),
+        hash_algorithm: Some(suite.canonical_hash_algorithm().to_owned()),
         verification_method: Some(verification_method),
     })
 }
