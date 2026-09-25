@@ -154,17 +154,6 @@ pub enum NodeRole {
 }
 
 impl NodeRole {
-    pub fn semantic_code(&self) -> &'static str {
-        match self {
-            Self::Root => "INRT",
-            Self::Registrar => "INRG",
-            Self::Discovery => "INDS",
-            Self::ServiceAgent => "AGDM",
-            Self::UserAgent => "AGUS",
-            Self::TestAgent => "AGTS",
-        }
-    }
-
     pub fn subject_type(&self) -> SubjectType {
         match self {
             Self::ServiceAgent | Self::UserAgent | Self::TestAgent => SubjectType::Agent,
@@ -786,8 +775,8 @@ pub enum DidDocumentError {
     MissingOanMetadata,
     #[error("oan subject type and resource type must match for discoverable resources")]
     ResourceTypeMismatch,
-    #[error("did subject code and oan resource type do not match")]
-    SubjectCodeResourceTypeMismatch,
+    #[error("did:oan identifier does not match profile-v2 syntax")]
+    InvalidDidOanIdentifier,
     #[error("did document controller is required")]
     MissingController,
     #[error("did document top-level proof is required")]
@@ -845,7 +834,7 @@ impl DidDocument {
             return Err(DidDocumentError::InvalidTypeCombination);
         }
         let did = oan_did_oan::DidOan::parse(&self.id)
-            .map_err(|_| DidDocumentError::SubjectCodeResourceTypeMismatch)?;
+            .map_err(|_| DidDocumentError::InvalidDidOanIdentifier)?;
         let _ = did;
         let proof = self.proof.as_ref().ok_or(DidDocumentError::MissingProof)?;
         validate_proof(self, controller, proof)?;
