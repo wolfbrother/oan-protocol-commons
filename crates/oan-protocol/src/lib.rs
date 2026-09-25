@@ -28,6 +28,22 @@ pub const PATH_ROOT_INFRASTRUCTURE_AUTHORIZATION_VCS_ISSUE: &str =
     "/root/infrastructure/authorization-vcs/issue";
 pub const PATH_CDN_RESOURCES: &str = "/cdn/resources";
 pub const PATH_CDN_RESOURCES_BATCH: &str = "/cdn/resources/batch";
+
+/// Checks the profile-v2 routing relationship for a resource submitted by a
+/// registrar.  This is a syntactic admission check only; authorization and
+/// lifecycle state remain governed by the existing proof and governance paths.
+pub fn validate_resource_routing_code(
+    resource_did: &str,
+    registrar_did: &str,
+) -> Result<(), String> {
+    let resource = DidOan::parse(resource_did).map_err(|err| err.to_string())?;
+    let registrar = DidOan::parse(registrar_did).map_err(|err| err.to_string())?;
+    let expected = &registrar.suffix_code()[..5];
+    if resource.routing_code() != expected {
+        return Err("resource_routing_code_mismatch".to_owned());
+    }
+    Ok(())
+}
 pub const REGISTRATION_FLOW: &str = "did-control";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
