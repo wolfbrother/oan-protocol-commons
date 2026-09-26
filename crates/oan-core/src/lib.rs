@@ -96,6 +96,7 @@ pub enum SubjectType {
     Organization,
     Developer,
     InfrastructureNode,
+    Controller,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,6 +118,7 @@ pub enum ResourceType {
     VcIssuerNode,
     TrustIndexerNode,
     Unspecified,
+    Controller,
 }
 
 impl ResourceType {
@@ -138,6 +140,7 @@ impl ResourceType {
             Self::VcIssuerNode => "vc_issuer_node",
             Self::TrustIndexerNode => "trust_indexer_node",
             Self::Unspecified => "unspecified",
+            Self::Controller => "controller",
         }
     }
 }
@@ -833,6 +836,12 @@ impl DidDocument {
         if !valid_type_combination(&metadata.subject_type, &metadata.resource_type) {
             return Err(DidDocumentError::InvalidTypeCombination);
         }
+        if metadata.subject_type == SubjectType::Controller
+            && metadata.resource_type == ResourceType::Controller
+            && !controller.contains(&self.id)
+        {
+            return Err(DidDocumentError::ControllerDidMismatch);
+        }
         let did = oan_did_oan::DidOan::parse(&self.id)
             .map_err(|_| DidDocumentError::InvalidDidOanIdentifier)?;
         let _ = did;
@@ -877,6 +886,7 @@ fn valid_type_combination(subject: &SubjectType, resource: &ResourceType) -> boo
                 SubjectType::TrustIndexerNode,
                 ResourceType::TrustIndexerNode
             )
+            | (SubjectType::Controller, ResourceType::Controller)
             | (SubjectType::Unspecified, ResourceType::Unspecified)
     )
 }
