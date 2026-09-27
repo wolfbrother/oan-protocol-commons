@@ -9,7 +9,8 @@ use chrono::{DateTime, Utc};
 use oan_core::{CryptoSuite, DataIntegrityProof, ResourceType, SubjectType};
 use oan_crypto::{
     build_data_integrity_proof, hash_json_with_suite, signature_input, verify_payload_with_proof,
-    verifying_key_from_method, CryptoError, SigningKey, VerifyingKey,
+    public_key_jwk, signing_key_from_private_key_jwk, verifying_key_from_method, CryptoError,
+    SigningKey, VerifyingKey,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -308,6 +309,14 @@ impl OanIdentity {
             return Err(CredentialError::InvalidSubject);
         }
         if method.public_key_jwk.as_ref() != Some(&self.public_key_jwk) {
+            return Err(CredentialError::InvalidSubject);
+        }
+        let suite = method
+            .crypto_suite()
+            .ok_or(CredentialError::InvalidSubject)?;
+        let signing_key = signing_key_from_private_key_jwk(suite, &self.private_key_jwk)
+            .map_err(|_| CredentialError::InvalidSubject)?;
+        if public_key_jwk(&signing_key.verifying_key()) != self.public_key_jwk {
             return Err(CredentialError::InvalidSubject);
         }
         self.did_document
