@@ -184,7 +184,14 @@ impl ResourcePackage {
     }
 
     pub fn verify_resource_type_consistency(&self) -> Result<(), PackageError> {
+        let did_metadata = self
+            .did_document
+            .oan_metadata
+            .as_ref()
+            .ok_or(PackageError::ResourceTypeMismatch)?;
         if self.resource_type == self.metadata.resource_type
+            && self.metadata.subject_type == did_metadata.subject_type
+            && self.resource_type == did_metadata.resource_type
             && resource_type_matches_subject(&self.resource_type, &self.metadata.subject_type)
         {
             Ok(())
