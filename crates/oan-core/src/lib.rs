@@ -850,6 +850,59 @@ impl DidDocument {
         validate_external_identifiers(&metadata.external_identifiers)?;
         Ok(())
     }
+
+    pub fn validate_infrastructure_profile(
+        &self,
+        expected_resource_type: ResourceType,
+    ) -> Result<(), DidDocumentError> {
+        self.validate_mvp()?;
+        let metadata = self
+            .oan_metadata
+            .as_ref()
+            .ok_or(DidDocumentError::MissingOanMetadata)?;
+        if metadata.subject_type != SubjectType::InfrastructureNode
+            || metadata.resource_type != expected_resource_type
+        {
+            return Err(DidDocumentError::InvalidTypeCombination);
+        }
+        if metadata.identity_type.is_some()
+            || metadata.extra.contains_key("nodeRole")
+            || metadata.extra.contains_key("identityType")
+        {
+            return Err(DidDocumentError::InvalidTypeCombination);
+        }
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(DidDocumentError::MissingController)?;
+        let key_id = format!("{}#key-1", self.id);
+        let method = self
+            .verification_method
+            .iter()
+            .find(|method| method.id == key_id && method.controller == self.id)
+            .ok_or(DidDocumentError::MissingVerificationMethod)?;
+        let expected_service_type = match expected_resource_type {
+            ResourceType::RootNode => "OANRootService",
+            ResourceType::RegistrarNode => "OANRegistrarService",
+            ResourceType::DiscoveryNode => "OANDiscoveryService",
+            ResourceType::VcIssuerNode => "OANVcIssuerService",
+            _ => return Err(DidDocumentError::InvalidTypeCombination),
+        };
+        if !self.authentication.iter().any(|value| value == &key_id)
+            || !self.assertion_method.iter().any(|value| value == &key_id)
+            || !controller.contains(&self.id)
+            || !self
+                .service
+                .iter()
+                .any(|service| service.service_type == expected_service_type)
+        {
+            return Err(DidDocumentError::InvalidTypeCombination);
+        }
+        if self.proof.is_none() || method.crypto_suite().is_none() {
+            return Err(DidDocumentError::MissingProof);
+        }
+        Ok(())
+    }
 }
 
 fn valid_type_combination(subject: &SubjectType, resource: &ResourceType) -> bool {
