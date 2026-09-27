@@ -318,6 +318,11 @@ impl OanIdentity {
             .proof
             .as_ref()
             .ok_or(CredentialError::InvalidSubject)?;
+        if proof.verification_method.as_deref() != Some(self.verification_method_id.as_str())
+            || proof.creator != self.verification_method_id
+        {
+            return Err(CredentialError::InvalidSubject);
+        }
         let verifying_key =
             verifying_key_from_method(method).map_err(|_| CredentialError::InvalidSubject)?;
         let mut unsigned = self.did_document.clone();
@@ -506,6 +511,16 @@ pub fn verify_oan_credential<T>(
 where
     T: Serialize,
 {
+    let verification_method = credential
+        .proof
+        .verification_method
+        .as_deref()
+        .ok_or(CredentialError::InvalidSignature)?;
+    if credential.proof.creator != verification_method
+        || !verification_method.starts_with(&format!("{}#", credential.issuer))
+    {
+        return Err(CredentialError::InvalidSignature);
+    }
     let mut unsigned = serde_json::to_value(credential)?;
     unsigned
         .as_object_mut()
