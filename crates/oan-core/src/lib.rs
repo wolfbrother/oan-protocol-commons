@@ -855,7 +855,7 @@ pub struct DidDocument {
     #[serde(default)]
     pub service: Vec<ServiceEndpoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub proof: Option<ProfileV2DataIntegrityProof>,
+    pub proof: Option<DataIntegrityProof>,
     #[serde(rename = "oanMetadata", skip_serializing_if = "Option::is_none")]
     pub oan_metadata: Option<OanMetadata>,
 }
@@ -1372,11 +1372,15 @@ fn valid_type_combination(subject: &SubjectType, resource: &ResourceType) -> boo
 fn validate_proof(
     document: &DidDocument,
     _controller: &DidController,
-    proof: &ProfileV2DataIntegrityProof,
+    proof: &DataIntegrityProof,
 ) -> Result<(), DidDocumentError> {
-    let verification_method = proof.verification_method.as_str();
+    let verification_method = proof
+        .verification_method
+        .as_deref()
+        .ok_or(DidDocumentError::InvalidProof("verificationMethod"))?;
     let expected_method = format!("{}#key-1", document.id);
-    if proof.proof_type != "Ed25519Signature2020"
+    if !proof.creator.is_empty()
+        || proof.proof_type != "Ed25519Signature2020"
         || proof.proof_purpose != "assertionMethod"
         || verification_method != expected_method
         || !proof.proof_value.starts_with('z')

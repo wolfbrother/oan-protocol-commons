@@ -316,7 +316,11 @@ impl OanIdentity {
             .proof
             .as_ref()
             .ok_or(CredentialError::InvalidSubject)?;
-        if proof.verification_method != self.verification_method_id {
+        if proof.verification_method.as_deref() != Some(self.verification_method_id.as_str())
+            || !proof.creator.is_empty()
+            || proof.crypto_suite.is_some()
+            || proof.hash_algorithm.is_some()
+        {
             return Err(CredentialError::InvalidSubject);
         }
         let verifying_key =
@@ -328,7 +332,7 @@ impl OanIdentity {
             created: proof.created,
             proof_purpose: proof.proof_purpose.clone(),
             proof_value: proof.proof_value.clone(),
-            verification_method: proof.verification_method.clone(),
+            verification_method: proof.verification_method.clone().unwrap(),
         };
         verify_profile_v2_payload(&unsigned, &proof, &verifying_key)
             .map_err(|_| CredentialError::InvalidSignature)?;
