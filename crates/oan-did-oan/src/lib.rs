@@ -3,7 +3,7 @@
 // Initial author: JINLIANG XU
 // Email: jlxufly@gmail.com
 
-//! `did:oan` profile-v2 parsing, generation, and validation.
+//! `did:oan` current did:oan parsing, generation, and validation.
 
 use rand::{rngs::OsRng, RngCore};
 use regex::Regex;
@@ -37,7 +37,7 @@ pub enum DidOanError {
     InvalidRoutingCode,
     #[error("suffix-code must be exactly 32 Base58 characters")]
     InvalidSuffixCode,
-    #[error("invalid did:oan profile-v2 syntax")]
+    #[error("invalid did:oan current did:oan syntax")]
     InvalidSyntax,
 }
 
