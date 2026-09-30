@@ -486,6 +486,54 @@ pub fn verify_bytes_multibase(
     }
 }
 
+pub fn verify_did_document_proof(document: &DidDocument) -> Result<(), CryptoError> {
+    const DID_CONTEXT: &str = "https://www.w3.org/ns/did/v1";
+    const OAN_CONTEXT: &str = "https://openagenet.xyz/did-oan-specs/v1";
+    const ED25519_CONTEXT: &str = "https://w3id.org/security/suites/ed25519-2020/v1";
+    if document.context
+        != [DID_CONTEXT.to_owned(), OAN_CONTEXT.to_owned(), ED25519_CONTEXT.to_owned()]
+    {
+        return Err(CryptoError::InvalidProof);
+    }
+    let proof = document.proof.as_ref().ok_or(CryptoError::InvalidProof)?;
+    if proof.proof_type != "Ed25519Signature2020"
+        || proof.proof_purpose != "assertionMethod"
+        || !proof.creator.is_empty()
+        || proof.crypto_suite.is_some()
+        || proof.hash_algorithm.is_some()
+    {
+        return Err(CryptoError::InvalidProof);
+    }
+    let method_id = format!("{}#key-1", document.id);
+    if proof.verification_method.as_deref() != Some(method_id.as_str())
+        || !document.assertion_method.iter().any(|id| id == &method_id)
+    {
+        return Err(CryptoError::InvalidProof);
+    }
+    let method = document
+        .verification_method
+        .iter()
+        .find(|method| method.id == method_id && method.controller == document.id)
+        .ok_or(CryptoError::InvalidProof)?;
+    if method.method_type != "Ed25519VerificationKey2020" {
+        return Err(CryptoError::InvalidProof);
+    }
+    if method
+        .public_key_jwk
+        .as_ref()
+        .and_then(|jwk| jwk.get("alg"))
+        .and_then(serde_json::Value::as_str)
+        == Some("Ed25519")
+    {
+        return Err(CryptoError::InvalidProof);
+    }
+    let verifying_key = verifying_key_from_method(method)?;
+    let mut unsigned = document.clone();
+    unsigned.proof = None;
+    let input = did_document_signature_input(&unsigned, CryptoSuite::Ed25519Sha256)?;
+    verify_bytes_multibase(&verifying_key, &input, &proof.proof_value)
+}
+
 pub fn sign_legacy_ed25519_bytes(signing_key: &Ed25519SigningKey, payload: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(signing_key.sign(payload).to_bytes())
 }
