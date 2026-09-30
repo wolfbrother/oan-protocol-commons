@@ -6,12 +6,15 @@
 //! Credential models and verification helpers.
 
 use chrono::{DateTime, Utc};
-use oan_core::{CryptoSuite, DataIntegrityProof, ResourceType, SubjectType};
-use oan_crypto::{
-    build_data_integrity_proof, hash_json_with_suite, public_key_jwk, signature_input,
-    signing_key_from_private_key_jwk, verify_payload_with_proof, verifying_key_from_method,
-    CryptoError, SigningKey, VerifyingKey,
+use oan_core::{
+    CryptoSuite, ProfileV2CredentialProof, ResourceType, SubjectType,
 };
+use oan_crypto::{
+    hash_json_with_suite, public_key_jwk, signature_input, signing_key_from_private_key_jwk,
+    verify_payload_with_proof, verify_profile_v2_payload, verifying_key_from_method, CryptoError,
+    SigningKey, VerifyingKey,
+};
+use ed25519_dalek::Signer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -32,7 +35,11 @@ pub enum CredentialError {
     Serialization(#[from] serde_json::Error),
 }
 
-pub type CredentialProof = DataIntegrityProof;
+/// VC proofs use the strict DID/VC profile-v2 Data Integrity shape.
+///
+/// Node-to-node request envelopes deliberately keep their separate
+/// `DataIntegrityProof` model in `oan-core`; it is not reused here.
+pub type CredentialProof = ProfileV2CredentialProof;
 
 pub const VC_INFRASTRUCTURE_AUTHORIZATION: &str = "OANInfrastructureAuthorizationCredential";
 pub const VC_RESOURCE_REGISTRATION: &str = "OANResourceRegistrationCredential";
@@ -40,6 +47,11 @@ pub const VC_BUSINESS_FACT: &str = "OANBusinessFactCredential";
 pub const VC_QUALIFICATION: &str = "OANQualificationCredential";
 pub const VC_AUDIT_RESULT: &str = "OANAuditResultCredential";
 pub const VC_SELF_CLAIMED_CAPABILITY: &str = "OANSelfClaimedCapabilityCredential";
+pub const OAN_VC_CONTEXTS: [&str; 3] = [
+    "https://www.w3.org/2018/credentials/v1",
+    "https://openagenet.xyz/did-oan-specs/v1",
+    "https://w3id.org/security/suites/ed25519-2020/v1",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialStatusReference {
@@ -54,34 +66,8 @@ pub struct CredentialStatusReference {
     pub issuer_did: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sequence: Option<u64>,
-    #[serde(rename = "eventDigest", skip_serializing_if = "Option::is_none")]
-    pub event_digest: Option<String>,
     #[serde(rename = "updatedAt", skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<DateTime<Utc>>,
-    #[serde(rename = "packageId", skip_serializing_if = "Option::is_none")]
-    pub package_id: Option<String>,
-    #[serde(rename = "bulletinObjectId", skip_serializing_if = "Option::is_none")]
-    pub bulletin_object_id: Option<String>,
-    #[serde(
-        rename = "expectedGovernanceState",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub expected_governance_state: Option<String>,
-    #[serde(rename = "latestAction", skip_serializing_if = "Option::is_none")]
-    pub latest_action: Option<String>,
-    #[serde(
-        rename = "didDocumentStableHash",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub did_document_stable_hash: Option<String>,
-    #[serde(rename = "policyHash", skip_serializing_if = "Option::is_none")]
-    pub policy_hash: Option<String>,
-    #[serde(rename = "effectiveFromMs", skip_serializing_if = "Option::is_none")]
-    pub effective_from_ms: Option<u64>,
-    #[serde(rename = "expiresAtMs", skip_serializing_if = "Option::is_none")]
-    pub expires_at_ms: Option<u64>,
     #[serde(flatten)]
     pub extra: std::collections::BTreeMap<String, Value>,
 }
@@ -129,10 +115,6 @@ pub struct InfrastructureAuthorizationCredentialSubject {
     pub authorized_domains: Vec<String>,
     #[serde(rename = "didDocumentHash")]
     pub did_document_hash: String,
-    #[serde(rename = "governanceState")]
-    pub governance_state: String,
-    #[serde(rename = "governanceBindingId")]
-    pub governance_binding_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -358,19 +340,25 @@ pub fn proof_payload_hash<T: Serialize>(
 
 pub fn sign_credential<T>(
     credential_without_proof: &T,
-    creator: String,
+    _creator: String,
     verification_method: String,
     signing_key: &SigningKey,
 ) -> Result<CredentialProof, CredentialError>
 where
     T: Serialize,
 {
-    Ok(build_data_integrity_proof(
-        credential_without_proof,
-        creator,
+    let SigningKey::Ed25519 { key, .. } = signing_key else {
+        return Err(CredentialError::InvalidSignature);
+    };
+    let input = signature_input(CryptoSuite::Ed25519Sha256, credential_without_proof)?;
+    let signature = key.sign(&input).to_bytes();
+    Ok(CredentialProof {
+        proof_type: "Ed25519Signature2020".to_owned(),
+        created: Utc::now(),
+        proof_purpose: "assertionMethod".to_owned(),
+        proof_value: format!("z{}", bs58::encode(signature).into_string()),
         verification_method,
-        signing_key,
-    )?)
+    })
 }
 
 pub fn verify_signed_payload<T>(
@@ -382,7 +370,7 @@ where
     T: Serialize,
 {
     let proof = proof.ok_or(CredentialError::MissingProof)?;
-    verify_payload_with_proof(payload_without_proof, proof, verifying_key)
+    verify_profile_v2_payload(payload_without_proof, proof, verifying_key)
         .map_err(|_| CredentialError::InvalidSignature)
 }
 
@@ -394,12 +382,9 @@ where
     T: Serialize,
 {
     let proof = proof.ok_or(CredentialError::MissingProof)?;
-    let suite = proof
-        .crypto_suite()
-        .ok_or(CredentialError::InvalidSignature)?;
-    let payload_input = signature_input(suite.clone(), payload_without_proof)?;
+    let payload_input = signature_input(CryptoSuite::Ed25519Sha256, payload_without_proof)?;
     let actual = hash_json_with_suite(
-        suite,
+        CryptoSuite::Ed25519Sha256,
         &serde_json::json!({
             "payloadInput": String::from_utf8_lossy(&payload_input),
             "proofValue": proof.proof_value
@@ -427,14 +412,7 @@ pub fn validate_infrastructure_authorization_credential(
     if subject.subject_type != "infrastructure_node" || !role_resource_matches {
         return Err(CredentialError::InvalidSubject);
     }
-    if subject.id.is_empty()
-        || subject.did_document_hash.is_empty()
-        || subject.governance_binding_id.is_empty()
-        || !matches!(
-            subject.governance_state.as_str(),
-            "active" | "suspended" | "revoked"
-        )
-    {
+    if subject.id.is_empty() || subject.did_document_hash.is_empty() {
         return Err(CredentialError::InvalidSubject);
     }
     Ok(())
@@ -528,13 +506,19 @@ pub fn verify_oan_credential<T>(
 where
     T: Serialize,
 {
+    if credential.context.iter().map(String::as_str).collect::<Vec<_>>()
+        != OAN_VC_CONTEXTS
+    {
+        return Err(CredentialError::InvalidSubject);
+    }
     let verification_method = credential
         .proof
         .verification_method
-        .as_deref()
-        .ok_or(CredentialError::InvalidSignature)?;
-    if credential.proof.creator != verification_method
+        .as_str();
+    if credential.proof.proof_type != "Ed25519Signature2020"
+        || credential.proof.proof_purpose != "assertionMethod"
         || !verification_method.starts_with(&format!("{}#", credential.issuer))
+        || !credential.proof.proof_value.starts_with('z')
     {
         return Err(CredentialError::InvalidSignature);
     }
