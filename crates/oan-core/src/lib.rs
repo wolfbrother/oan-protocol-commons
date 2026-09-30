@@ -617,6 +617,7 @@ impl VerificationMethod {
 pub struct DataIntegrityProof {
     #[serde(rename = "type")]
     pub proof_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub creator: String,
     pub created: chrono::DateTime<chrono::Utc>,
     #[serde(rename = "proofPurpose")]
@@ -854,7 +855,7 @@ pub struct DidDocument {
     #[serde(default)]
     pub service: Vec<ServiceEndpoint>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub proof: Option<DataIntegrityProof>,
+    pub proof: Option<ProfileV2DataIntegrityProof>,
     #[serde(rename = "oanMetadata", skip_serializing_if = "Option::is_none")]
     pub oan_metadata: Option<OanMetadata>,
 }
@@ -1370,12 +1371,27 @@ fn valid_type_combination(subject: &SubjectType, resource: &ResourceType) -> boo
 
 fn validate_proof(
     document: &DidDocument,
-    controller: &DidController,
-    proof: &DataIntegrityProof,
+    _controller: &DidController,
+    proof: &ProfileV2DataIntegrityProof,
 ) -> Result<(), DidDocumentError> {
-    if proof.proof_purpose != "assertionMethod" {
-        return Err(DidDocumentError::InvalidProof("proofPurpose"));
+    let verification_method = proof.verification_method.as_str();
+    let expected_method = format!("{}#key-1", document.id);
+    if proof.proof_type != "Ed25519Signature2020"
+        || proof.proof_purpose != "assertionMethod"
+        || verification_method != expected_method
+        || !proof.proof_value.starts_with('z')
+        || bs58::decode(&proof.proof_value[1..])
+            .into_vec()
+            .map_or(true, |signature: Vec<u8>| signature.len() != 64)
+        || !document
+            .assertion_method
+            .iter()
+            .any(|method| method == verification_method)
+    {
+        return Err(DidDocumentError::InvalidProof("profileV2"));
     }
+    Ok(())
+    /*
     let verification_method = proof
         .verification_method
         .as_deref()
@@ -1419,6 +1435,7 @@ fn validate_proof(
         return Err(DidDocumentError::InvalidProof("algorithmMismatch"));
     }
     Ok(())
+    */
 }
 
 fn validate_external_identifiers(values: &[ExternalIdentifier]) -> Result<(), DidDocumentError> {
