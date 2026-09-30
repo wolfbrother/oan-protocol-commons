@@ -449,6 +449,43 @@ pub fn sign_bytes(signing_key: &SigningKey, payload: &[u8]) -> Result<String, Cr
     }
 }
 
+pub fn sign_bytes_multibase(
+    signing_key: &SigningKey,
+    payload: &[u8],
+) -> Result<String, CryptoError> {
+    let signature = sign_bytes(signing_key, payload)?;
+    let signature = URL_SAFE_NO_PAD
+        .decode(signature)
+        .map_err(|_| CryptoError::InvalidSignature)?;
+    Ok(format!("z{}", bs58::encode(signature).into_string()))
+}
+
+pub fn verify_bytes_multibase(
+    verifying_key: &VerifyingKey,
+    payload: &[u8],
+    signature_multibase: &str,
+) -> Result<(), CryptoError> {
+    let encoded = signature_multibase
+        .strip_prefix('z')
+        .ok_or(CryptoError::InvalidSignature)?;
+    let signature = bs58::decode(encoded)
+        .into_vec()
+        .map_err(|_| CryptoError::InvalidSignature)?;
+    if signature.len() != 64 {
+        return Err(CryptoError::InvalidSignature);
+    }
+    match verifying_key {
+        VerifyingKey::Ed25519 { key, .. } => key
+            .verify(
+                payload,
+                &Ed25519Signature::from_slice(&signature)
+                    .map_err(|_| CryptoError::InvalidSignature)?,
+            )
+            .map_err(|_| CryptoError::VerificationFailed),
+        VerifyingKey::Sm2 { .. } => Err(CryptoError::UnsupportedCryptoSuite),
+    }
+}
+
 pub fn sign_legacy_ed25519_bytes(signing_key: &Ed25519SigningKey, payload: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(signing_key.sign(payload).to_bytes())
 }
