@@ -415,6 +415,18 @@ where
     T: Serialize,
 {
     let value = serde_json::to_value(credential)?;
+    let issuer = value
+        .get("issuer")
+        .and_then(Value::as_str)
+        .ok_or(CredentialError::InvalidSubject)?;
+    let verification_method = value
+        .get("proof")
+        .and_then(|proof| proof.get("verificationMethod"))
+        .and_then(Value::as_str)
+        .ok_or(CredentialError::InvalidSignature)?;
+    if verification_method != format!("{issuer}#key-1") {
+        return Err(CredentialError::InvalidSignature);
+    }
     verify_oan_data_integrity(value, issuer_public_key_jwk).await?;
     Ok(())
 }
