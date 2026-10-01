@@ -12,7 +12,7 @@ use oan_core::{
 use oan_crypto::{
     hash_json_with_suite, private_key_jwk, public_key_jwk, signature_input, sign_oan_data_integrity,
     signing_key_from_private_key_jwk,
-    verify_oan_payload, verifying_key_from_method, CryptoError,
+    verify_oan_data_integrity, verify_oan_payload, verifying_key_from_method, CryptoError,
     SigningKey, VerifyingKey,
 };
 use ed25519_dalek::Signer;
@@ -405,6 +405,18 @@ where
         object.remove("@context");
     }
     serde_json::from_value(proof).map_err(CredentialError::Serialization)
+}
+
+pub async fn verify_credential_data_integrity<T>(
+    credential: &T,
+    issuer_public_key_jwk: Value,
+) -> Result<(), CredentialError>
+where
+    T: Serialize,
+{
+    let value = serde_json::to_value(credential)?;
+    verify_oan_data_integrity(value, issuer_public_key_jwk).await?;
+    Ok(())
 }
 
 pub fn verify_signed_payload<T>(
