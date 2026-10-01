@@ -480,7 +480,7 @@ impl CryptoSuite {
 
     pub fn from_verification_method_type(value: &str) -> Option<Self> {
         match value {
-            "Ed25519VerificationKey2020" => Some(Self::Ed25519Sha256Legacy),
+            "Ed25519VerificationKey2020" => Some(Self::Ed25519Sha256),
             "SM2VerificationKey2020" => Some(Self::Sm2Sm3),
             _ => None,
         }
@@ -488,7 +488,7 @@ impl CryptoSuite {
 
     pub fn from_proof_type(value: &str) -> Option<Self> {
         match value {
-            "Ed25519Signature2020" => Some(Self::Ed25519Sha256Legacy),
+            "Ed25519Signature2020" => Some(Self::Ed25519Sha256),
             "SM2Signature2020" => Some(Self::Sm2Sm3),
             _ => None,
         }
