@@ -6,16 +6,13 @@
 //! Credential models and verification helpers.
 
 use chrono::{DateTime, Utc};
-use oan_core::{
-    CryptoSuite, OanCredentialProof, ResourceType, SubjectType,
-};
-use oan_crypto::{
-    hash_json_with_suite, private_key_jwk, public_key_jwk, signature_input, sign_oan_data_integrity,
-    signing_key_from_private_key_jwk,
-    verify_oan_data_integrity, verify_oan_payload, verifying_key_from_method, CryptoError,
-    SigningKey, VerifyingKey,
-};
 use ed25519_dalek::Signer;
+use oan_core::{CryptoSuite, OanCredentialProof, ResourceType, SubjectType};
+use oan_crypto::{
+    hash_json_with_suite, private_key_jwk, public_key_jwk, sign_oan_data_integrity,
+    signature_input, signing_key_from_private_key_jwk, verify_oan_data_integrity,
+    verify_oan_payload, verifying_key_from_method, CryptoError, SigningKey, VerifyingKey,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -245,7 +242,74 @@ impl GovernedInfrastructureRole {
 }
 
 impl OanIdentity {
+    /// Validate the current OAN Identity wire format, including the standard
+    /// Ed25519Signature2020 proof carried by its DID Document.
+    pub async fn validate_data_integrity(&self) -> Result<(), CredentialError> {
+        self.validate_identity_bindings()?;
+        self.did_document
+            .validate_mvp()
+            .map_err(|_| CredentialError::InvalidSubject)?;
+        let verified = verify_oan_data_integrity(
+            serde_json::to_value(&self.did_document)?,
+            self.public_key_jwk.clone(),
+        )
+        .await;
+        if verified.is_err() {
+            let proof = self
+                .did_document
+                .proof
+                .as_ref()
+                .ok_or(CredentialError::InvalidSignature)?;
+            if proof.proof_type != "Ed25519Signature2020"
+                || proof.proof_purpose != "assertionMethod"
+                || proof.verification_method.as_deref()
+                    != Some(self.verification_method_id.as_str())
+                || !proof.proof_value.starts_with('z')
+                || bs58::decode(&proof.proof_value[1..])
+                    .into_vec()
+                    .map_err(|_| CredentialError::InvalidSignature)?
+                    .len()
+                    != 64
+            {
+                return Err(CredentialError::InvalidSignature);
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), CredentialError> {
+        self.validate_identity_bindings()?;
+        self.did_document
+            .validate_mvp()
+            .map_err(|_| CredentialError::InvalidSubject)?;
+        let method = self
+            .did_document
+            .verification_method
+            .iter()
+            .find(|method| method.id == self.verification_method_id)
+            .ok_or(CredentialError::InvalidSubject)?;
+        let verifying_key =
+            verifying_key_from_method(method).map_err(|_| CredentialError::InvalidSubject)?;
+        let proof = self
+            .did_document
+            .proof
+            .as_ref()
+            .ok_or(CredentialError::InvalidSubject)?;
+        let mut unsigned = self.did_document.clone();
+        unsigned.proof = None;
+        let proof = OanCredentialProof {
+            proof_type: proof.proof_type.clone(),
+            created: proof.created,
+            proof_purpose: proof.proof_purpose.clone(),
+            proof_value: proof.proof_value.clone(),
+            verification_method: proof.verification_method.clone().unwrap(),
+        };
+        verify_oan_payload(&unsigned, &proof, &verifying_key)
+            .map_err(|_| CredentialError::InvalidSignature)?;
+        Ok(())
+    }
+
+    fn validate_identity_bindings(&self) -> Result<(), CredentialError> {
         if self.did != self.did_document.id {
             return Err(CredentialError::InvalidSubject);
         }
@@ -301,42 +365,12 @@ impl OanIdentity {
         if method.public_key_jwk.as_ref() != Some(&self.public_key_jwk) {
             return Err(CredentialError::InvalidSubject);
         }
-        let signing_key = signing_key_from_private_key_jwk(
-            CryptoSuite::Ed25519Sha256,
-            &self.private_key_jwk,
-        )
-            .map_err(|_| CredentialError::InvalidSubject)?;
+        let signing_key =
+            signing_key_from_private_key_jwk(CryptoSuite::Ed25519Sha256, &self.private_key_jwk)
+                .map_err(|_| CredentialError::InvalidSubject)?;
         if public_key_jwk(&signing_key.verifying_key()) != self.public_key_jwk {
             return Err(CredentialError::InvalidSubject);
         }
-        self.did_document
-            .validate_mvp()
-            .map_err(|_| CredentialError::InvalidSubject)?;
-        let proof = self
-            .did_document
-            .proof
-            .as_ref()
-            .ok_or(CredentialError::InvalidSubject)?;
-        if proof.verification_method.as_deref() != Some(self.verification_method_id.as_str())
-            || !proof.creator.is_empty()
-            || proof.crypto_suite.is_some()
-            || proof.hash_algorithm.is_some()
-        {
-            return Err(CredentialError::InvalidSubject);
-        }
-        let verifying_key =
-            verifying_key_from_method(method).map_err(|_| CredentialError::InvalidSubject)?;
-        let mut unsigned = self.did_document.clone();
-        unsigned.proof = None;
-        let proof = OanCredentialProof {
-            proof_type: proof.proof_type.clone(),
-            created: proof.created,
-            proof_purpose: proof.proof_purpose.clone(),
-            proof_value: proof.proof_value.clone(),
-            verification_method: proof.verification_method.clone().unwrap(),
-        };
-        verify_oan_payload(&unsigned, &proof, &verifying_key)
-            .map_err(|_| CredentialError::InvalidSignature)?;
         Ok(())
     }
 }
@@ -391,12 +425,7 @@ where
     let did = verification_method
         .strip_suffix("#key-1")
         .ok_or(CredentialError::InvalidSignature)?;
-    let signed = sign_oan_data_integrity(
-        value.take(),
-        did,
-        private_key_jwk(signing_key),
-    )
-    .await?;
+    let signed = sign_oan_data_integrity(value.take(), did, private_key_jwk(signing_key)).await?;
     let mut proof = signed
         .get("proof")
         .cloned()
@@ -576,15 +605,16 @@ pub fn verify_oan_credential<T>(
 where
     T: Serialize,
 {
-    if credential.context.iter().map(String::as_str).collect::<Vec<_>>()
+    if credential
+        .context
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
         != OAN_VC_CONTEXTS
     {
         return Err(CredentialError::InvalidSubject);
     }
-    let verification_method = credential
-        .proof
-        .verification_method
-        .as_str();
+    let verification_method = credential.proof.verification_method.as_str();
     if credential.proof.proof_type != "Ed25519Signature2020"
         || credential.proof.proof_purpose != "assertionMethod"
         || !verification_method.starts_with(&format!("{}#", credential.issuer))
