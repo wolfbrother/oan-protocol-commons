@@ -1243,11 +1243,7 @@ impl DidDocument {
         if self.id.is_empty() {
             return Err(DidDocumentError::EmptyId);
         }
-        if !self
-            .context
-            .iter()
-            .any(|value| value == "https://www.w3.org/ns/did/v1")
-        {
+        if self.context.iter().map(String::as_str).collect::<Vec<_>>() != DID_OAN_CONTEXTS {
             return Err(DidDocumentError::MissingDidCoreContext);
         }
         if self.verification_method.is_empty() {
@@ -1398,7 +1394,9 @@ fn validate_proof(
         .as_deref()
         .ok_or(DidDocumentError::InvalidProof("verificationMethod"))?;
     let expected_method = format!("{}#key-1", document.id);
-    if proof.creator != verification_method
+    if !proof.creator.is_empty()
+        || proof.crypto_suite.is_some()
+        || proof.hash_algorithm.is_some()
         || proof.proof_type != "Ed25519Signature2020"
         || proof.proof_purpose != "assertionMethod"
         || verification_method != expected_method
@@ -1408,6 +1406,10 @@ fn validate_proof(
             .map_or(true, |signature: Vec<u8>| signature.len() != 64)
         || !document
             .assertion_method
+            .iter()
+            .any(|method| method == verification_method)
+        || !document
+            .authentication
             .iter()
             .any(|method| method == verification_method)
     {
