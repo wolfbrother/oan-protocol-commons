@@ -325,7 +325,6 @@ impl ResourceRegistrationSubmission {
     }
 }
 
-
 fn validate_hash_reference(field_name: &str, value: &str, algorithm: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         return Err(format!("empty_{field_name}"));
@@ -342,7 +341,11 @@ pub struct ResourceVerifyAndPublishRequest {
     #[serde(rename = "registrarDid")]
     pub registrar_did: String,
     pub submission: ResourceRegistrationSubmission,
-    #[serde(rename = "didDocumentRaw", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "didDocumentRaw",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub did_document_raw: Option<Value>,
     #[serde(rename = "upstreamAuth")]
     pub upstream_auth: SignedRequestEnvelope,

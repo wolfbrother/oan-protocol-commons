@@ -203,6 +203,7 @@ pub fn create_signed_request_envelope<T: Serialize>(
         request_nonce: input.nonce,
         body_hash,
         proof: DataIntegrityProof {
+            context: None,
             proof_type: String::new(),
             creator: String::new(),
             created: Utc::now(),

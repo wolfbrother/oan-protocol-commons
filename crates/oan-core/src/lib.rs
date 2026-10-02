@@ -611,6 +611,8 @@ impl VerificationMethod {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataIntegrityProof {
+    #[serde(rename = "@context", skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
     #[serde(rename = "type")]
     pub proof_type: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1396,7 +1398,7 @@ fn validate_proof(
         .as_deref()
         .ok_or(DidDocumentError::InvalidProof("verificationMethod"))?;
     let expected_method = format!("{}#key-1", document.id);
-    if !proof.creator.is_empty()
+    if proof.creator != verification_method
         || proof.proof_type != "Ed25519Signature2020"
         || proof.proof_purpose != "assertionMethod"
         || verification_method != expected_method
