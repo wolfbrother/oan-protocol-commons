@@ -1476,7 +1476,11 @@ fn validate_external_identifiers(values: &[ExternalIdentifier]) -> Result<(), Di
         {
             return Err(DidDocumentError::InvalidExternalIdentifier("id"));
         }
-        if !ids.insert(&value.id) {
+        let endpoint_key = value
+            .resolution_service_endpoint
+            .as_deref()
+            .unwrap_or_default();
+        if !ids.insert((endpoint_key, value.id.as_str())) {
             return Err(DidDocumentError::InvalidExternalIdentifier("duplicate"));
         }
         if let Some(endpoint) = &value.resolution_service_endpoint {
