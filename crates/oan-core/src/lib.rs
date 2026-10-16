@@ -1236,9 +1236,38 @@ pub enum DidDocumentError {
     InvalidTypeCombination,
     #[error("oan metadata controllerDid must match the top-level controller")]
     ControllerDidMismatch,
+    #[error("external controller requires oan metadata controllerDid")]
+    ExternalControllerMetadataRequired,
+    #[error("multiple distinct controllers are not supported by the registration profile")]
+    MultipleControllersNotSupported,
+    #[error("top-level controller declaration is invalid")]
+    InvalidControllerDeclaration,
 }
 
 impl DidDocument {
+    pub fn registration_controller(&self) -> Result<(String, bool), DidDocumentError> {
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(DidDocumentError::MissingController)?;
+        let values: Vec<&str> = match controller {
+            DidController::Did(value) => vec![value.as_str()],
+            DidController::Dids(values) => values.iter().map(String::as_str).collect(),
+        };
+        if values.iter().any(|value| value.trim().is_empty()) {
+            return Err(DidDocumentError::InvalidControllerDeclaration);
+        }
+        let unique = values.iter().copied().collect::<BTreeSet<_>>();
+        if unique.is_empty() {
+            return Err(DidDocumentError::InvalidControllerDeclaration);
+        }
+        if unique.len() > 1 {
+            return Err(DidDocumentError::MultipleControllersNotSupported);
+        }
+        let controller_did = unique.into_iter().next().unwrap().to_owned();
+        Ok((controller_did.clone(), controller_did != self.id))
+    }
+
     pub fn validate_mvp(&self) -> Result<(), DidDocumentError> {
         if self.id.is_empty() {
             return Err(DidDocumentError::EmptyId);
@@ -1268,10 +1297,16 @@ impl DidDocument {
             .oan_metadata
             .as_ref()
             .ok_or(DidDocumentError::MissingOanMetadata)?;
-        if let Some(controller_did) = metadata.controller_did.as_deref() {
-            if !controller.contains(controller_did) {
-                return Err(DidDocumentError::ControllerDidMismatch);
+        let did = oan_did_oan::DidOan::parse(&self.id)
+            .map_err(|_| DidDocumentError::InvalidDidOanIdentifier)?;
+        let _ = did;
+        let (registration_controller, external_controller) = self.registration_controller()?;
+        match (external_controller, metadata.controller_did.as_deref()) {
+            (true, None) => return Err(DidDocumentError::ExternalControllerMetadataRequired),
+            (_, Some(controller_did)) if controller_did != registration_controller => {
+                return Err(DidDocumentError::ControllerDidMismatch)
             }
+            _ => {}
         }
         if !valid_type_combination(&metadata.subject_type, &metadata.resource_type) {
             return Err(DidDocumentError::InvalidTypeCombination);
@@ -1282,9 +1317,6 @@ impl DidDocument {
         {
             return Err(DidDocumentError::ControllerDidMismatch);
         }
-        let did = oan_did_oan::DidOan::parse(&self.id)
-            .map_err(|_| DidDocumentError::InvalidDidOanIdentifier)?;
-        let _ = did;
         let proof = self.proof.as_ref().ok_or(DidDocumentError::MissingProof)?;
         validate_proof(self, controller, proof)?;
         validate_external_identifiers(&metadata.external_identifiers)?;

@@ -271,6 +271,13 @@ impl ResourceRegistrationSubmission {
         self.did_document
             .validate_oan_resource()
             .map_err(|err| err.to_string())?;
+        let (_, external_controller) = self
+            .did_document
+            .registration_controller()
+            .map_err(|err| err.to_string())?;
+        if external_controller && self.controller_authorization_proof.is_none() {
+            return Err("controller_authorization_proof_required".to_owned());
+        }
         if self
             .did_document
             .oan_metadata
@@ -305,6 +312,13 @@ impl ResourceRegistrationSubmission {
         }
         if let Some(bundle) = &self.controller_authorization_proof {
             let controller_challenge = &bundle.challenge;
+            let (controller_did, external_controller) = self
+                .did_document
+                .registration_controller()
+                .map_err(|err| err.to_string())?;
+            if !external_controller || controller_challenge.controller_did != controller_did {
+                return Err("controller_authorization_controller_mismatch".to_owned());
+            }
             if controller_challenge.resource_did != self.resource_did {
                 return Err("controller_authorization_resource_did_mismatch".to_owned());
             }
