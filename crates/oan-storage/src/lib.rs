@@ -1139,9 +1139,7 @@ impl PostgresJsonStore {
         };
         let mut query = sqlx::query_as::<_, (String, String, String)>(sql).bind(namespace);
         if let Some(cursor) = cursor {
-            query = query
-                .bind(&cursor.updated_at)
-                .bind(&cursor.record_key);
+            query = query.bind(&cursor.updated_at).bind(&cursor.record_key);
         }
         let mut stream = query.bind(i64::from(limit)).fetch(&self.pool);
         let mut items = Vec::with_capacity(limit as usize);
