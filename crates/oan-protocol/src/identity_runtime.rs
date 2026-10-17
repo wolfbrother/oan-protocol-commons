@@ -1,3 +1,8 @@
+// Copyright (c) 2026 OpenAgenet contributors
+//
+// Initial author: JINLIANG XU
+// Email: jlxufly@gmail.com
+
 //! Experimental edge context, carried in an existing signed envelope body.
 //! Parsing this context does not authenticate a caller.
 use serde::{Deserialize, Serialize};
