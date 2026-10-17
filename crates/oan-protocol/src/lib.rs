@@ -5,6 +5,8 @@
 
 //! Protocol models shared across OpenAgenet nodes.
 
+pub mod identity_runtime;
+
 use chrono::{DateTime, Utc};
 use oan_core::{DataIntegrityProof, DidDocument, ResourceType, ServiceEndpoint};
 use oan_did_oan::DidOan;
