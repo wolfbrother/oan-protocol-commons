@@ -31,6 +31,15 @@ use ssi_jwk::JWK;
 use ssi_verification_methods::{AnyMethod, Ed25519VerificationKey2020, SingleSecretSigner};
 use thiserror::Error;
 
+mod verification_executor;
+
+pub use verification_executor::{
+    verify_did_document_proof_compatible_value_isolated,
+    verify_did_document_proof_standard_blocking, verify_did_document_proof_standard_value_blocking,
+    verify_did_document_proof_standard_value_isolated, CompatibleDidDocumentProofError,
+    VerifiedWireDidDocument,
+};
+
 const DEFAULT_SM2_DISTINGUISHED_ID: &str = "1234567812345678";
 const DID_CORE_CONTEXT_URL: &str = "https://www.w3.org/ns/did/v1";
 const DID_CORE_CONTEXT_DOCUMENT: &str = r#"{"@context":{"id":"@id","type":"@type","controller":"https://w3id.org/security#controller","verificationMethod":"https://w3id.org/security#verificationMethod","authentication":"https://w3id.org/security#authenticationMethod","assertionMethod":"https://w3id.org/security#assertionMethod","capabilityInvocation":"https://w3id.org/security#capabilityInvocationMethod","service":"https://www.w3.org/ns/did#service","serviceEndpoint":"https://www.w3.org/ns/did#serviceEndpoint"}}"#;
@@ -287,33 +296,6 @@ pub async fn verify_did_document_proof_standard_value(
         .cloned()
         .ok_or(CryptoError::MissingKeyMaterial)?;
     verify_oan_data_integrity(document, public_key).await
-}
-
-pub fn verify_did_document_proof_standard_blocking(
-    document: &DidDocument,
-) -> Result<(), CryptoError> {
-    let document = document.clone();
-    std::thread::Builder::new()
-        .name("oan-did-document-proof-verifier".to_owned())
-        .stack_size(16 * 1024 * 1024)
-        .spawn(move || futures::executor::block_on(verify_did_document_proof_standard(&document)))
-        .map_err(|error| CryptoError::StandardDataIntegrity(error.to_string()))?
-        .join()
-        .map_err(|_| CryptoError::StandardDataIntegrity("verifier thread panicked".to_owned()))?
-}
-
-pub fn verify_did_document_proof_standard_value_blocking(
-    document: serde_json::Value,
-) -> Result<(), CryptoError> {
-    std::thread::Builder::new()
-        .name("oan-did-document-proof-verifier".to_owned())
-        .stack_size(16 * 1024 * 1024)
-        .spawn(move || {
-            futures::executor::block_on(verify_did_document_proof_standard_value(document))
-        })
-        .map_err(|error| CryptoError::StandardDataIntegrity(error.to_string()))?
-        .join()
-        .map_err(|_| CryptoError::StandardDataIntegrity("verifier thread panicked".to_owned()))?
 }
 
 fn oan_data_integrity_context_loader() -> Result<ssi_json_ld::ContextLoader, CryptoError> {
