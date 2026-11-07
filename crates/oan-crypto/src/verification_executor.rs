@@ -10,8 +10,8 @@ use std::{
 };
 use thiserror::Error;
 
-const WORKER_COUNT: usize = 4;
-const QUEUE_CAPACITY: usize = 8;
+const WORKER_COUNT: usize = 6;
+const QUEUE_CAPACITY: usize = 12;
 const WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 const WORKER_NAME: &str = "oan-did-document-proof-verifier";
 const VERIFIER_PANICKED: &str = "verifier thread panicked";
