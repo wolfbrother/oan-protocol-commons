@@ -153,6 +153,10 @@ impl DidDocumentVerificationExecutor {
             Err(_) => verify_compatible_one_off_async(document).await,
         }
     }
+
+
+
+
 }
 
 impl Drop for DidDocumentVerificationExecutor {
@@ -166,13 +170,17 @@ impl Drop for DidDocumentVerificationExecutor {
 
 fn worker_loop(receiver: flume::Receiver<VerificationJob>) {
     while let Ok(job) = receiver.recv() {
-        match job {
-            VerificationJob::Standard { document, result } => {
-                let _ = result.send(run_standard(document.as_ref()));
-            }
-            VerificationJob::Compatible { document, result } => {
-                let _ = result.send(run_compatible(document));
-            }
+        let _ = catch_unwind(AssertUnwindSafe(|| process_job(job)));
+    }
+}
+
+fn process_job(job: VerificationJob) {
+    match job {
+        VerificationJob::Standard { document, result } => {
+            let _ = result.send(run_standard(document.as_ref()));
+        }
+        VerificationJob::Compatible { document, result } => {
+            let _ = result.send(run_compatible(document));
         }
     }
 }
