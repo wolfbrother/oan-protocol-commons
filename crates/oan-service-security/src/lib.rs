@@ -255,6 +255,22 @@ pub fn verify_signed_request_envelope<T: Serialize>(
     policy: &TrustedUpstreamPolicy,
     now: DateTime<Utc>,
 ) -> Result<TrustedUpstreamContext, SecurityError> {
+    validate_signed_request_envelope_before_nonce(envelope, policy, now)?;
+    verify_and_store_nonce(
+        &policy.nonce_store_path,
+        &envelope.request_nonce,
+        envelope.request_timestamp,
+        now,
+        policy.nonce_ttl_seconds,
+    )?;
+    verify_signed_request_envelope_after_nonce(envelope, payload, signer_did, signer_document)
+}
+
+pub fn validate_signed_request_envelope_before_nonce(
+    envelope: &SignedRequestEnvelope,
+    policy: &TrustedUpstreamPolicy,
+    now: DateTime<Utc>,
+) -> Result<(), SecurityError> {
     if envelope.proof.proof_value.is_empty() {
         return Err(SecurityError::code("trusted_upstream_signature_missing"));
     }
@@ -276,13 +292,15 @@ pub fn verify_signed_request_envelope<T: Serialize>(
         policy.max_clock_skew_seconds,
         "trusted_upstream_timestamp_stale",
     )?;
-    verify_and_store_nonce(
-        &policy.nonce_store_path,
-        &envelope.request_nonce,
-        envelope.request_timestamp,
-        now,
-        policy.nonce_ttl_seconds,
-    )?;
+    Ok(())
+}
+
+pub fn verify_signed_request_envelope_after_nonce<T: Serialize>(
+    envelope: &SignedRequestEnvelope,
+    payload: &T,
+    signer_did: &str,
+    signer_document: &DidDocument,
+) -> Result<TrustedUpstreamContext, SecurityError> {
     let fallback_method = format!("{signer_did}#key-1");
     let expected_method = envelope
         .proof
