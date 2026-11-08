@@ -17,6 +17,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
+    #[error("invalid database pool configuration")]
+    InvalidPoolConfiguration,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
@@ -249,6 +251,31 @@ pub struct LeasedJob<T> {
 
 impl SqliteJsonStore {
     pub async fn connect(url: &str) -> Result<Self, StorageError> {
+        Self::connect_with_pool(
+            url,
+            &PoolOptions {
+                max_connections: configured_pool_max_connections("OAN_SQLITE_MAX_CONNECTIONS", 32),
+                acquire_timeout_seconds: configured_pool_timeout_seconds(
+                    "OAN_SQLITE_ACQUIRE_TIMEOUT_SECONDS",
+                    30,
+                ),
+                idle_timeout_seconds: None,
+                max_lifetime_seconds: None,
+            },
+        )
+        .await
+    }
+
+    pub async fn connect_with_pool(
+        url: &str,
+        pool_options: &PoolOptions,
+    ) -> Result<Self, StorageError> {
+        pool_options.validate()?;
+        if pool_options.idle_timeout_seconds.is_some()
+            || pool_options.max_lifetime_seconds.is_some()
+        {
+            return Err(StorageError::InvalidPoolConfiguration);
+        }
         let config = DatabaseConfig::parse(url)?;
         if config.backend() != DatabaseBackend::Sqlite {
             return Err(StorageError::UnsupportedDatabaseUrl);
@@ -262,12 +289,9 @@ impl SqliteJsonStore {
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(30));
-        let max_connections = configured_pool_max_connections("OAN_SQLITE_MAX_CONNECTIONS", 32);
-        let acquire_timeout_seconds =
-            configured_pool_timeout_seconds("OAN_SQLITE_ACQUIRE_TIMEOUT_SECONDS", 30);
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(max_connections)
-            .acquire_timeout(Duration::from_secs(acquire_timeout_seconds))
+            .max_connections(pool_options.max_connections)
+            .acquire_timeout(Duration::from_secs(pool_options.acquire_timeout_seconds))
             .connect_with(options)
             .await?;
         ensure_json_records_sqlite(&pool).await?;
@@ -738,19 +762,36 @@ impl SqliteJsonStore {
 
 impl PostgresJsonStore {
     pub async fn connect(url: &str) -> Result<Self, StorageError> {
+        Self::connect_with_pool(
+            url,
+            &PoolOptions {
+                max_connections: configured_pool_max_connections("OAN_POSTGRES_MAX_CONNECTIONS", 8),
+                acquire_timeout_seconds: configured_pool_timeout_seconds(
+                    "OAN_POSTGRES_ACQUIRE_TIMEOUT_SECONDS",
+                    30,
+                ),
+                idle_timeout_seconds: Some(30),
+                max_lifetime_seconds: Some(300),
+            },
+        )
+        .await
+    }
+
+    pub async fn connect_with_pool(
+        url: &str,
+        pool_options: &PoolOptions,
+    ) -> Result<Self, StorageError> {
+        pool_options.validate()?;
         let config = DatabaseConfig::parse(url)?;
         if config.backend() != DatabaseBackend::Postgres {
             return Err(StorageError::UnsupportedDatabaseUrl);
         }
-        let max_connections = configured_pool_max_connections("OAN_POSTGRES_MAX_CONNECTIONS", 8);
-        let acquire_timeout_seconds =
-            configured_pool_timeout_seconds("OAN_POSTGRES_ACQUIRE_TIMEOUT_SECONDS", 30);
         let pool = sqlx::postgres::PgPoolOptions::new()
             .min_connections(0)
-            .max_connections(max_connections)
-            .idle_timeout(Some(Duration::from_secs(30)))
-            .max_lifetime(Some(Duration::from_secs(300)))
-            .acquire_timeout(Duration::from_secs(acquire_timeout_seconds))
+            .max_connections(pool_options.max_connections)
+            .idle_timeout(pool_options.idle_timeout_seconds.map(Duration::from_secs))
+            .max_lifetime(pool_options.max_lifetime_seconds.map(Duration::from_secs))
+            .acquire_timeout(Duration::from_secs(pool_options.acquire_timeout_seconds))
             .connect(config.url())
             .await?;
         ensure_json_records_postgres(&pool).await?;
@@ -1216,6 +1257,23 @@ impl PostgresJsonStore {
             .bind(namespace)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PoolOptions {
+    pub max_connections: u32,
+    pub acquire_timeout_seconds: u64,
+    pub idle_timeout_seconds: Option<u64>,
+    pub max_lifetime_seconds: Option<u64>,
+}
+
+impl PoolOptions {
+    fn validate(&self) -> Result<(), StorageError> {
+        if self.max_connections == 0 || self.acquire_timeout_seconds == 0 {
+            return Err(StorageError::InvalidPoolConfiguration);
+        }
         Ok(())
     }
 }

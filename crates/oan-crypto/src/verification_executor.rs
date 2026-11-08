@@ -17,6 +17,54 @@ const WORKER_NAME: &str = "oan-did-document-proof-verifier";
 const VERIFIER_PANICKED: &str = "verifier thread panicked";
 
 static EXECUTOR: OnceLock<Result<DidDocumentVerificationExecutor, String>> = OnceLock::new();
+static OPTIONS: OnceLock<VerificationExecutorOptions> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VerificationExecutorOptions {
+    pub worker_count: usize,
+    pub queue_capacity: usize,
+    pub worker_stack_size_mib: usize,
+}
+
+impl Default for VerificationExecutorOptions {
+    fn default() -> Self {
+        Self {
+            worker_count: WORKER_COUNT,
+            queue_capacity: QUEUE_CAPACITY,
+            worker_stack_size_mib: WORKER_STACK_SIZE / (1024 * 1024),
+        }
+    }
+}
+
+impl VerificationExecutorOptions {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=1024).contains(&self.worker_count)
+            || !(1..=1_048_576).contains(&self.queue_capacity)
+            || !(1..=1024).contains(&self.worker_stack_size_mib)
+            || self
+                .worker_stack_size_mib
+                .checked_mul(1024 * 1024)
+                .is_none()
+        {
+            return Err("invalid runtime.did_verification capacity or stack size".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn initialize_did_verification_executor(
+    options: VerificationExecutorOptions,
+) -> Result<(), String> {
+    options.validate()?;
+    let configured = OPTIONS.get_or_init(|| options);
+    if configured != &options {
+        return Err("DID verification executor already configured differently".into());
+    }
+    // Resource creation errors retain the existing per-verification fallback.
+    let _ = shared_executor();
+    Ok(())
+}
 
 #[derive(Debug)]
 pub struct VerifiedWireDidDocument {
@@ -62,17 +110,19 @@ struct DidDocumentVerificationExecutor {
 
 impl DidDocumentVerificationExecutor {
     fn new() -> Result<Self, String> {
-        Self::with_capacity(WORKER_COUNT, QUEUE_CAPACITY)
+        Self::with_options(*OPTIONS.get_or_init(VerificationExecutorOptions::default))
     }
 
-    fn with_capacity(worker_count: usize, queue_capacity: usize) -> Result<Self, String> {
-        let (sender, receiver) = flume::bounded(queue_capacity);
-        let mut workers = Vec::with_capacity(worker_count);
-        for index in 0..worker_count {
+
+    fn with_options(options: VerificationExecutorOptions) -> Result<Self, String> {
+        options.validate()?;
+        let (sender, receiver) = flume::bounded(options.queue_capacity);
+        let mut workers = Vec::with_capacity(options.worker_count);
+        for index in 0..options.worker_count {
             let worker_receiver = receiver.clone();
             let worker = thread::Builder::new()
                 .name(format!("{WORKER_NAME}-{index}"))
-                .stack_size(WORKER_STACK_SIZE)
+                .stack_size(options.worker_stack_size_mib * 1024 * 1024)
                 .spawn(move || worker_loop(worker_receiver));
             match worker {
                 Ok(worker) => workers.push(worker),

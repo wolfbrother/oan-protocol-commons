@@ -34,10 +34,10 @@ use thiserror::Error;
 mod verification_executor;
 
 pub use verification_executor::{
-    verify_did_document_proof_compatible_value_isolated,
+    initialize_did_verification_executor, verify_did_document_proof_compatible_value_isolated,
     verify_did_document_proof_standard_blocking, verify_did_document_proof_standard_value_blocking,
     verify_did_document_proof_standard_value_isolated, CompatibleDidDocumentProofError,
-    VerifiedWireDidDocument,
+    VerificationExecutorOptions, VerifiedWireDidDocument,
 };
 
 const DEFAULT_SM2_DISTINGUISHED_ID: &str = "1234567812345678";

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/oan-config",
     "crates/oan-core",
     "crates/oan-did-oan",
     "crates/oan-crypto",
