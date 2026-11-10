@@ -457,10 +457,9 @@ pub fn effective<T: Serialize>(value: &T, sources: &BTreeMap<String, String>) ->
             ]
             .iter()
             .any(|part| lower.contains(part))
+                && !value.is_null()
             {
-                if !value.is_null() {
-                    *value = json!("<redacted>");
-                }
+                *value = json!("<redacted>");
             }
         }
     }
