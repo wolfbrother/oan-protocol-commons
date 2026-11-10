@@ -136,6 +136,13 @@ pub struct ControllerAuthorizationVerificationContext<'a> {
     pub now: DateTime<Utc>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedProof {
+    pub verification_method: String,
+    pub proof_hash: String,
+    pub verified_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NonceStore {
     pub nonces: BTreeMap<String, DateTime<Utc>>,
@@ -495,6 +502,19 @@ pub fn verify_controller_authorization_proof(
     bundle: &ControllerAuthorizationProofBundle,
     context: &ControllerAuthorizationVerificationContext<'_>,
 ) -> Result<String, SecurityError> {
+    verify_controller_authorization_proof_with_document(
+        bundle,
+        &bundle.controller_did_document,
+        context,
+    )
+    .map(|verified| verified.verification_method)
+}
+
+pub fn verify_controller_authorization_proof_with_document(
+    bundle: &ControllerAuthorizationProofBundle,
+    trusted_controller_document: &DidDocument,
+    context: &ControllerAuthorizationVerificationContext<'_>,
+) -> Result<VerifiedProof, SecurityError> {
     let challenge = &bundle.challenge;
     if challenge.resource_did != context.expected_resource_did {
         return Err(SecurityError::code(
@@ -556,15 +576,21 @@ pub fn verify_controller_authorization_proof(
             "controller_authorization_did_document_id_mismatch",
         ));
     }
+    if trusted_controller_document.id != challenge.controller_did {
+        return Err(SecurityError::code(
+            "controller_authorization_trusted_document_mismatch",
+        ));
+    }
     reject_private_key_material(&bundle.controller_did_document)?;
+    reject_private_key_material(trusted_controller_document)?;
     let method = find_relationship_method(
-        &bundle.controller_did_document,
+        trusted_controller_document,
         VerificationRelationship::CapabilityInvocation,
         Some(&challenge.verification_method),
     )
     .or_else(|_| {
         find_relationship_method(
-            &bundle.controller_did_document,
+            trusted_controller_document,
             VerificationRelationship::AssertionMethod,
             Some(&challenge.verification_method),
         )
@@ -599,7 +625,11 @@ pub fn verify_controller_authorization_proof(
             ));
         }
     }
-    Ok(method.id.clone())
+    Ok(VerifiedProof {
+        verification_method: method.id.clone(),
+        proof_hash: hash_proof(&bundle.proof)?,
+        verified_at: context.now,
+    })
 }
 
 pub fn reject_private_key_material(did_document: &DidDocument) -> Result<(), SecurityError> {
@@ -635,6 +665,16 @@ pub fn verify_subject_control_proof(
     did_document: &DidDocument,
     context: &DidControlVerificationContext<'_>,
 ) -> Result<String, SecurityError> {
+    verify_subject_control_proof_with_clock_skew(bundle, did_document, context, 60)
+        .map(|verified| verified.verification_method)
+}
+
+pub fn verify_subject_control_proof_with_clock_skew(
+    bundle: &SubjectControlProofBundle,
+    did_document: &DidDocument,
+    context: &DidControlVerificationContext<'_>,
+    max_clock_skew_seconds: i64,
+) -> Result<VerifiedProof, SecurityError> {
     let challenge = &bundle.challenge;
     if challenge.subject_did != context.expected_subject_did {
         return Err(SecurityError::code("subject_control_subject_mismatch"));
@@ -650,16 +690,45 @@ pub fn verify_subject_control_proof(
     if challenge.purpose != context.expected_purpose {
         return Err(SecurityError::code("subject_control_purpose_mismatch"));
     }
+    if challenge.nonce.trim().is_empty() {
+        return Err(SecurityError::code("subject_control_nonce_missing"));
+    }
+    if challenge.issued_at > challenge.expires_at {
+        return Err(SecurityError::code("subject_control_time_window_invalid"));
+    }
+    if challenge.issued_at > context.now + Duration::seconds(max_clock_skew_seconds) {
+        return Err(SecurityError::code(
+            "subject_control_challenge_not_yet_valid",
+        ));
+    }
     if context.now > challenge.expires_at {
         return Err(SecurityError::code("subject_control_challenge_expired"));
     }
+    reject_private_key_material(did_document)?;
     let method = find_relationship_method(
         did_document,
         VerificationRelationship::AssertionMethod,
         Some(&challenge.verification_method),
     )?;
+    if method.controller != challenge.subject_did {
+        return Err(SecurityError::code(
+            "subject_control_method_controller_mismatch",
+        ));
+    }
     let verifying_key = verifying_key_from_method(method)
         .map_err(|_| SecurityError::code("subject_control_proof_invalid"))?;
+    if bundle.proof.proof_purpose != VerificationRelationship::AssertionMethod.as_str() {
+        return Err(SecurityError::code(
+            "subject_control_proof_purpose_mismatch",
+        ));
+    }
+    if bundle.proof.creator != challenge.subject_did
+        && bundle.proof.creator != challenge.verification_method
+    {
+        return Err(SecurityError::code(
+            "subject_control_proof_creator_mismatch",
+        ));
+    }
     verify_payload_with_proof(challenge, &bundle.proof, &verifying_key)
         .map_err(|_| SecurityError::code("subject_control_proof_invalid"))?;
     if let Some(value) = &bundle.proof.verification_method {
@@ -669,7 +738,11 @@ pub fn verify_subject_control_proof(
             ));
         }
     }
-    Ok(method.id.clone())
+    Ok(VerifiedProof {
+        verification_method: method.id.clone(),
+        proof_hash: hash_proof(&bundle.proof)?,
+        verified_at: context.now,
+    })
 }
 
 pub fn verify_admin_token(
